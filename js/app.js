@@ -1,13 +1,13 @@
 /* SimpleSpend (localStorage prototype)
    - Month-first budgets
-   - Monthly categories: budgeted + expenses (inline expand)
-   - Annual categories: target + balance + contributions + expenses (inline expand)
+   - Monthly categories: budgeted + expenses (inline expand with chevron + animation)
+   - Annual categories: target + balance + contributions + expenses (inline expand with chevron + animation)
    - Planned Remaining + Left to Spend
    - Version badge reads VERSION.txt
 */
 
-const APP_FALLBACK_VERSION = "v0.2";
-const STORAGE_KEY = "simplespend_v02";
+const APP_FALLBACK_VERSION = "v0.3";
+const STORAGE_KEY = "simplespend_v03";
 
 const monthSelect = document.getElementById("monthSelect");
 const prevMonthBtn = document.getElementById("prevMonthBtn");
@@ -85,7 +85,6 @@ async function loadVersionBadge(){
   const badge = document.getElementById("versionBadge");
   if (!badge) return;
 
-  // Works on GitHub Pages. If you open index.html as a local file, fetch may fail — fallback handles it.
   try{
     const res = await fetch("./VERSION.txt", { cache: "no-store" });
     if (!res.ok) throw new Error("Bad response");
@@ -119,6 +118,7 @@ function wireEvents(){
   addMonthlyCategoryBtn.addEventListener("click", async () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
+
     const res = await promptForm("Add Monthly Category", [
       { key:"name", label:"Name", type:"text", placeholder:"Groceries" },
       { key:"budgeted", label:"Budgeted", type:"money", placeholder:"0.00" }
@@ -138,6 +138,7 @@ function wireEvents(){
   addAnnualCategoryBtn.addEventListener("click", async () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
+
     const res = await promptForm("Add Annual Category", [
       { key:"name", label:"Name", type:"text", placeholder:"Vacation" },
       { key:"target", label:"Annual Target", type:"money", placeholder:"2000.00" },
@@ -213,7 +214,7 @@ function renderTotalsOnly(){
   leftToSpendEl.className = "stat-value " + (left < 0 ? "negative" : "positive");
 }
 
-// -------------------- Monthly Table (inline expand) --------------------
+// -------------------- Monthly Table (inline expand + chevron + animation) --------------------
 function renderMonthlyTable(){
   const b = getBudget(currentMonthKey);
   const expenses = getMonthExpenses(b, "monthly");
@@ -244,7 +245,12 @@ function renderMonthlyTable(){
 
     html += `
       <div class="trow" data-toggle-category="monthly:${cat.id}">
-        <div><div>${escapeHtml(cat.name)}</div></div>
+        <div class="catcell">
+          <span class="chev ${isOpen ? "open" : ""}">›</span>
+          <div style="min-width:0;">
+            <div>${escapeHtml(cat.name)}</div>
+          </div>
+        </div>
         <div class="money">${fmtMoney(cat.budgeted)}</div>
         <div class="money">${fmtMoney(spent)}</div>
         <div class="money ${remClass}">${fmtMoney(remaining)}</div>
@@ -255,13 +261,14 @@ function renderMonthlyTable(){
       </div>
     `;
 
-    if (isOpen){
-      const list = expenses
-        .filter(e => (e.categoryId || null) === cat.id)
-        .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
+    const list = expenses
+      .filter(e => (e.categoryId || null) === cat.id)
+      .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
 
-      html += `
-        <div class="detail-row">
+    // Always render the row so animation can work smoothly
+    html += `
+      <div class="detail-row">
+        <div class="detail-anim ${isOpen ? "open" : ""}">
           <div class="detail-inner">
             <div class="detail-muted">${monthKeyToLabel(currentMonthKey)} • Monthly</div>
             ${list.length ? `
@@ -271,13 +278,13 @@ function renderMonthlyTable(){
             ` : `<div class="detail-muted">No expenses for this category in this month.</div>`}
           </div>
         </div>
-      `;
-    }
+      </div>
+    `;
   });
 
   monthlyTable.innerHTML = html;
 
-  // Toggle open/close
+  // Toggle open/close (single expanded state collapses others automatically)
   monthlyTable.querySelectorAll("[data-toggle-category]").forEach(row => {
     row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
@@ -339,7 +346,7 @@ function renderMonthlyTable(){
   });
 }
 
-// -------------------- Annual Table (inline expand + delete contrib) --------------------
+// -------------------- Annual Table (inline expand + chevron + animation + delete contrib) --------------------
 function renderAnnualTable(){
   const b = getBudget(currentMonthKey);
   const year = currentMonthKey.slice(0,4);
@@ -374,10 +381,13 @@ function renderAnnualTable(){
 
     html += `
       <div class="trow" data-toggle-category="annual:${cat.id}" style="grid-template-columns: 1.2fr .7fr .7fr .7fr auto;">
-        <div>
-          <div>${escapeHtml(cat.name)}</div>
-          <div class="cell-muted">
-            <span class="small-pill">${fmtMoney(remainingOfTarget)} of target remaining</span>
+        <div class="catcell">
+          <span class="chev ${isOpen ? "open" : ""}">›</span>
+          <div style="min-width:0;">
+            <div>${escapeHtml(cat.name)}</div>
+            <div class="cell-muted">
+              <span class="small-pill">${fmtMoney(remainingOfTarget)} of target remaining</span>
+            </div>
           </div>
         </div>
         <div class="money">${fmtMoney(cat.target)}</div>
@@ -391,19 +401,19 @@ function renderAnnualTable(){
       </div>
     `;
 
-    if (isOpen){
-      const exList = monthAnnualEx
-        .filter(e => (e.categoryId || null) === cat.id)
-        .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
+    const exList = monthAnnualEx
+      .filter(e => (e.categoryId || null) === cat.id)
+      .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
 
-      const contribList = monthContrib
-        .filter(c => (c.categoryId || null) === cat.id)
-        .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
+    const contribList = monthContrib
+      .filter(c => (c.categoryId || null) === cat.id)
+      .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
 
-      const hasAny = contribList.length || exList.length;
+    const hasAny = contribList.length || exList.length;
 
-      html += `
-        <div class="detail-row">
+    html += `
+      <div class="detail-row">
+        <div class="detail-anim ${isOpen ? "open" : ""}">
           <div class="detail-inner">
             <div class="detail-muted">${monthKeyToLabel(currentMonthKey)} • Annual (this month)</div>
 
@@ -422,8 +432,8 @@ function renderAnnualTable(){
             ` : (hasAny ? `` : `<div class="detail-muted">No annual activity for this category in this month.</div>`)}
           </div>
         </div>
-      `;
-    }
+      </div>
+    `;
   });
 
   annualTable.innerHTML = html;
@@ -444,6 +454,9 @@ function renderAnnualTable(){
   annualTable.querySelectorAll("[data-contrib]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
+      const b = getBudget(currentMonthKey);
+      if (!b) return;
+
       const catId = btn.dataset.contrib;
       const cat = b.annualCategories.find(c => c.id === catId);
       if (!cat) return;
@@ -480,6 +493,9 @@ function renderAnnualTable(){
   annualTable.querySelectorAll("[data-edit-annual]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
+      const b = getBudget(currentMonthKey);
+      if (!b) return;
+
       const id = btn.dataset.editAnnual;
       const cat = b.annualCategories.find(c => c.id === id);
       if (!cat) return;
@@ -504,6 +520,9 @@ function renderAnnualTable(){
   annualTable.querySelectorAll("[data-del-annual]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
+      const b = getBudget(currentMonthKey);
+      if (!b) return;
+
       const id = btn.dataset.delAnnual;
 
       if (!confirm("Delete this annual category? Expenses remain but become uncategorized.")) return;
@@ -667,7 +686,7 @@ function saveExpense({ keepOpen }){
 
   // Apply annual expense to balance
   if (type === "annual"){
-    adjustAnnualBalance(b, categoryId, -amount); // expense reduces balance
+    adjustAnnualBalance(b, categoryId, -amount);
   }
 
   saveState();
@@ -688,15 +707,15 @@ function saveExpense({ keepOpen }){
 function deleteExpense(expId){
   const b = getBudget(currentMonthKey);
   if (!b) return;
+
   const idx = b.expenses.findIndex(e => e.id === expId);
   if (idx === -1) return;
 
   if (!confirm("Delete this expense?")) return;
 
   const ex = b.expenses[idx];
-  // undo annual balance effect
   if (ex.type === "annual"){
-    adjustAnnualBalance(b, ex.categoryId, +ex.amount);
+    adjustAnnualBalance(b, ex.categoryId, +ex.amount); // undo
   }
 
   b.expenses.splice(idx, 1);
@@ -707,6 +726,7 @@ function deleteExpense(expId){
 function editExpense(expId){
   const b = getBudget(currentMonthKey);
   if (!b) return;
+
   const ex = b.expenses.find(e => e.id === expId);
   if (!ex) return;
 
@@ -738,17 +758,16 @@ function deleteContribution(contribId){
   if (cat) cat.balance = (cat.balance || 0) - (c.amount || 0);
 
   b.contributions.splice(idx, 1);
-
   saveState();
   render();
 }
 
 // -------------------- Annual Balance Helpers --------------------
 function adjustAnnualBalance(budget, categoryId, delta){
-  if (!categoryId) return; // uncategorized
+  if (!categoryId) return;
   const cat = budget.annualCategories.find(c => c.id === categoryId);
   if (!cat) return;
-  cat.balance = (cat.balance || 0) + delta; // can go negative (approved)
+  cat.balance = (cat.balance || 0) + delta; // can go negative
 }
 
 // -------------------- Month lifecycle --------------------
@@ -773,7 +792,6 @@ function createBudgetForMonth(monthKey, copyPrev){
   };
 
   if (copyPrev && prev){
-    // Copy categories + budgeted. Annual categories copy too (target + balance).
     base.income = prev.income || 0;
 
     base.monthlyCategories = prev.monthlyCategories.map(c => ({
@@ -905,7 +923,6 @@ function getMonthExpenses(budget, type){
 }
 
 function seedMonthSelect(){
-  // rolling window (past 24, next 12)
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth() - 24, 1);
   const end = new Date(now.getFullYear(), now.getMonth() + 12, 1);
