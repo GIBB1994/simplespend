@@ -1,8 +1,16 @@
 /* SimpleSpend v0.7
-   Fixes:
-   - Annual categories are YEAR-scoped (no month cloning, no rollover across years)
-   - Annual YTD totals persist across months in same year
-   - Extra bucket behavior verified + enforced (never selectable)
+   - Annual categories are YEAR-scoped (no rollover across years)
+   - Annual "Total" grows with contributions: Total = Target + StartingBalance + Contributions(YTD)
+   - Annual "Left" is current balance: Left = Total - Expenses(YTD)
+   - Annual expanded view shows ALL contributions + ALL annual expenses for the year (editable)
+   - Progress ring shows remaining (full -> empties as remaining goes down)
+   - Remove "tap to show spent" tips
+   - Category Left/Total display has NO cents (expenses still show cents)
+   - Extra bucket:
+       * NEVER selectable in Add Expense
+       * ONLY appears when it contains expenses
+       * Receives expenses on category delete
+       * Auto-hides when empty
 */
 
 const APP_FALLBACK_VERSION = "v0.7";
@@ -64,7 +72,7 @@ state = {
   },
   annualByYear: {
     "YYYY": {
-      categories: [{ id, name, target, balance }],
+      categories: [{ id, name, target, balance }],  // balance = Starting Balance (preloaded contributions)
       contributions: [{ id, categoryId, amount, dateISO, note }]
     }
   }
@@ -139,8 +147,8 @@ function wireEvents(){
   });
 
   addAnnualCategoryBtn.addEventListener("click", async () => {
-    ensureAnnualYear(getYearFromMonthKey(currentMonthKey));
     const year = getYearFromMonthKey(currentMonthKey);
+    ensureAnnualYear(year);
     const y = state.annualByYear[year];
 
     const res = await promptForm(`Add Annual Category (${year})`, [
@@ -150,12 +158,12 @@ function wireEvents(){
     ]);
     if (!res) return;
 
-    // BUG A FIX: this ONLY touches annual list (year-scoped). Never monthly.
+    // Bug A: ONLY annual list (year-scoped)
     y.categories.push({
       id: uid(),
       name: (res.name || "").trim() || "Unnamed",
       target: parseMoney(res.target),
-      balance: parseMoney(res.balance)
+      balance: parseMoney(res.balance) // starting balance (preloaded contributions)
     });
 
     saveState();
@@ -207,12 +215,12 @@ function renderTotalsOnly(){
   if (!b) return;
 
   const incomeC = toCents(b.income);
-  const monthlyBudgetedC = sumCents(b.monthlyCategories.map(c => toCents(c.budgeted)));
 
+  const monthlyBudgetedC = sumCents(b.monthlyCategories.map(c => toCents(c.budgeted)));
   const monthlySpentC = sumCents(getMonthExpenses(b, "monthly").map(x => toCents(x.amount)));
 
-  const plannedC = incomeC - monthlyBudgetedC;
-  const leftC = incomeC - monthlySpentC;
+  const plannedC = incomeC - monthlyBudgetedC; // can go negative
+  const leftC = incomeC - monthlySpentC;       // can go negative
 
   plannedRemainingEl.textContent = fmtMoney(fromCents(plannedC));
   leftToSpendEl.textContent = fmtMoney(fromCents(leftC));
@@ -235,9 +243,9 @@ function renderMonthlyTable(){
   `;
 
   const rows = [];
-  b.monthlyCategories.forEach(c => rows.push({ id:c.id, name:c.name, total:c.budgeted, kind:"normal" }));
+  (b.monthlyCategories || []).forEach(c => rows.push({ id:c.id, name:c.name, total:c.budgeted, kind:"normal" }));
 
-  // Bug C: Extra only appears when it contains expenses
+  // Extra only if it contains expenses
   const extraSpentC = sumCents(expenses.filter(e => e.categoryId === EXTRA_ID).map(e => toCents(e.amount)));
   if (extraSpentC !== 0){
     rows.push({ id:EXTRA_ID, name:EXTRA_NAME, total:0, kind:"extra" });
@@ -257,13 +265,14 @@ function renderMonthlyTable(){
     const leftC = totalC - spentC;
 
     const line = amountMode === "left"
-      ? `${fmtMoney(fromCents(leftC))} / ${fmtMoney(fromCents(totalC))}`
-      : `${fmtMoney(fromCents(spentC))} / ${fmtMoney(fromCents(totalC))}`;
+      ? `${fmtMoney0(fromCents(leftC))} / ${fmtMoney0(fromCents(totalC))}`
+      : `${fmtMoney0(fromCents(spentC))} / ${fmtMoney0(fromCents(totalC))}`;
 
     const lineClass = (amountMode === "left" && leftC < 0) ? "negative" : "";
 
-    const pct = progressPct(spentC, totalC);
-    const ringColor = ringTone(spentC, totalC);
+    // Ring shows remaining (full -> empty)
+    const pct = remainingPct(leftC, totalC);
+    const ringColor = remainingTone(leftC, totalC);
     const isOpen = expanded.type === "monthly" && expanded.id === cat.id;
 
     html += `
@@ -278,7 +287,6 @@ function renderMonthlyTable(){
 
         <button class="amountbtn" data-toggle-amount="1" type="button" aria-label="Toggle amount mode">
           <div class="amountline money ${lineClass}">${escapeHtml(line)}</div>
-          <div class="amountmode">${amountMode === "left" ? "tap to show spent" : "tap to show left"}</div>
         </button>
 
         <div class="ring" style="${ringStyle(pct, ringColor)}"></div>
@@ -332,6 +340,7 @@ function renderAnnualTable(){
 
   const y = state.annualByYear[year];
   const ytd = getYearToDateAnnualStats(year);
+  const annualExpensesAll = getAnnualYearExpenses(year); // [{...ex, _monthKey}]
 
   const header = `
     <div class="thead listgrid">
@@ -341,15 +350,13 @@ function renderAnnualTable(){
     </div>
   `;
 
-  const monthAnnualEx = getMonthExpenses(b, "annual");
-
   const rows = [];
-  y.categories.forEach(c => rows.push({ id:c.id, name:c.name, total:c.target, kind:"normal" }));
+  (y.categories || []).forEach(c => rows.push({ id:c.id, name:c.name, target:c.target, balance:c.balance, kind:"normal" }));
 
-  // Extra in annual list: show if YTD extra has any spend in this year
+  // Extra appears if it has any annual expenses YTD in this year
   const extraYtdSpentC = toCents(ytd[EXTRA_ID]?.spent ?? 0);
   if (extraYtdSpentC !== 0){
-    rows.push({ id:EXTRA_ID, name:EXTRA_NAME, total:0, kind:"extra" });
+    rows.push({ id:EXTRA_ID, name:EXTRA_NAME, target:0, balance:0, kind:"extra" });
   }
 
   if (!rows.length){
@@ -360,22 +367,31 @@ function renderAnnualTable(){
   let html = header;
 
   rows.forEach(cat => {
-    const monthCatEx = monthAnnualEx.filter(e => e.categoryId === cat.id);
+    // YTD sums
+    const spentYtd = (ytd[cat.id]?.spent ?? 0);
+    const spentC = toCents(spentYtd);
 
-    const ytdSpent = (ytd[cat.id]?.spent ?? 0);
-    const spentC = toCents(ytdSpent);
-    const totalC = toCents(cat.total || 0);
-    const leftC = totalC - spentC;
+    const contribYtd = sumMoney((y.contributions || []).filter(c => c.categoryId === cat.id).map(c => c.amount || 0));
+    const totalDisplayed = (Number(cat.target) || 0) + (Number(cat.balance) || 0) + (Number(contribYtd) || 0);
+    const leftDisplayed = totalDisplayed - (Number(spentYtd) || 0);
+
+    const totalC = toCents(totalDisplayed);
+    const leftC = toCents(leftDisplayed);
 
     const line = amountMode === "left"
-      ? `${fmtMoney(fromCents(leftC))} / ${fmtMoney(fromCents(totalC))}`
-      : `${fmtMoney(fromCents(spentC))} / ${fmtMoney(fromCents(totalC))}`;
+      ? `${fmtMoney0(fromCents(leftC))} / ${fmtMoney0(fromCents(totalC))}`
+      : `${fmtMoney0(fromCents(spentC))} / ${fmtMoney0(fromCents(totalC))}`;
 
     const lineClass = (amountMode === "left" && leftC < 0) ? "negative" : "";
 
-    const pct = progressPct(spentC, totalC);
-    const ringColor = ringTone(spentC, totalC);
+    // Ring shows remaining (full -> empty)
+    const pct = remainingPct(leftC, totalC);
+    const ringColor = remainingTone(leftC, totalC);
     const isOpen = expanded.type === "annual" && expanded.id === cat.id;
+
+    const targetLine = cat.kind !== "extra"
+      ? `<div class="catsub">Target: ${escapeHtml(fmtMoney0(cat.target || 0))}</div>`
+      : `<div class="catsub">Hidden uncategorized. Reassign these.</div>`;
 
     html += `
       <div class="trow listgrid" data-toggle="annual:${cat.id}">
@@ -383,33 +399,32 @@ function renderAnnualTable(){
           <span class="chev ${isOpen ? "open" : ""}">›</span>
           <div style="min-width:0;">
             <div class="catname">${escapeHtml(cat.name)}</div>
-            ${cat.kind === "extra" ? `<div class="catsub">Hidden uncategorized. Reassign these.</div>` : ``}
+            ${targetLine}
           </div>
         </div>
 
         <button class="amountbtn" data-toggle-amount="1" type="button" aria-label="Toggle amount mode">
           <div class="amountline money ${lineClass}">${escapeHtml(line)}</div>
-          <div class="amountmode">${amountMode === "left" ? "tap to show spent" : "tap to show left"}</div>
         </button>
 
         <div class="ring" style="${ringStyle(pct, ringColor)}"></div>
       </div>
     `;
 
-    // Contributions are YEAR scoped; show THIS MONTH only in expanded view
-    const monthContribs = (y.contributions || []).filter(c =>
-      c.categoryId === cat.id && (c.dateISO || "").startsWith(currentMonthKey + "-")
-    );
+    // Contributions: show ALL for year
+    const contribsAll = (y.contributions || []).filter(c => c.categoryId === cat.id);
 
-    // (Optional) show the fund balance in detail (kept minimal)
-    const bal = cat.kind !== "extra" ? getAnnualCategoryBalance(year, cat.id) : null;
+    // Expenses: show ALL for year
+    const exAll = annualExpensesAll.filter(ex => ex.categoryId === cat.id);
 
     html += `
       <div class="detail-row">
         <div class="detail-anim ${isOpen ? "open" : ""}">
           <div class="detail-inner">
-            <div class="detail-muted">${year} • Annual (YTD) • this month shown below</div>
-            ${bal != null ? `<div class="detail-muted">Balance: <span class="money">${fmtMoney(bal)}</span></div>` : ``}
+            <div class="detail-muted">${year} • Annual (YTD)</div>
+            ${cat.kind !== "extra"
+              ? `<div class="detail-muted">Total: <span class="money">${escapeHtml(fmtMoney0(totalDisplayed))}</span> • Left: <span class="money ${leftDisplayed < 0 ? "negative" : ""}">${escapeHtml(fmtMoney0(leftDisplayed))}</span></div>`
+              : ``}
 
             <div class="row row-wrap row-gap">
               ${cat.kind !== "extra"
@@ -426,27 +441,27 @@ function renderAnnualTable(){
                 : ``}
             </div>
 
-            ${monthContribs.length ? `
-              <div class="detail-muted">Contributions (this month)</div>
+            ${contribsAll.length ? `
+              <div class="detail-muted">Contributions (YTD)</div>
               <div class="detail-list">
-                ${monthContribs
+                ${contribsAll
                   .slice()
                   .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
                   .map(c => inlineContributionCardHtml(c))
                   .join("")}
               </div>
-            ` : ``}
+            ` : `<div class="cell-muted">No contributions yet.</div>`}
 
-            <div class="detail-muted">Expenses (this month)</div>
-            ${monthCatEx.length ? `
+            <div class="detail-muted">Expenses (YTD)</div>
+            ${exAll.length ? `
               <div class="detail-list">
-                ${monthCatEx
+                ${exAll
                   .slice()
                   .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
-                  .map(ex => inlineExpenseCardHtml(ex))
+                  .map(ex => inlineAnnualExpenseCardHtml(ex))
                   .join("")}
               </div>
-            ` : `<div class="cell-muted">No annual expenses in this category this month.</div>`}
+            ` : `<div class="cell-muted">No annual expenses yet.</div>`}
           </div>
         </div>
       </div>
@@ -456,12 +471,14 @@ function renderAnnualTable(){
   annualTable.innerHTML = html;
 
   bindListInteractions(annualTable);
-  bindExpenseCardActions(annualTable);
+  bindExpenseCardActions(annualTable);          // monthly cards only (from current month table)
+  bindAnnualExpenseCardActions(annualTable);    // annual YTD cards (search across year)
   bindContributionActions(annualTable);
 }
 
 // -------------------- List interactions --------------------
 function bindListInteractions(container){
+  // Row expand/collapse
   container.querySelectorAll("[data-toggle]").forEach(row => {
     row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
@@ -471,6 +488,7 @@ function bindListInteractions(container){
     });
   });
 
+  // Amount toggle (global)
   container.querySelectorAll("[data-toggle-amount]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -479,6 +497,7 @@ function bindListInteractions(container){
     });
   });
 
+  // Add expense from category
   container.querySelectorAll("[data-add-exp]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -487,6 +506,7 @@ function bindListInteractions(container){
     });
   });
 
+  // Edit category
   container.querySelectorAll("[data-edit-cat]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -495,6 +515,7 @@ function bindListInteractions(container){
     });
   });
 
+  // Delete category => orphan expenses to Extra
   container.querySelectorAll("[data-del-cat]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -503,6 +524,7 @@ function bindListInteractions(container){
     });
   });
 
+  // Contribution (annual)
   container.querySelectorAll("[data-contrib]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -518,7 +540,7 @@ async function editCategory(type, id){
   if (!b) return;
 
   if (type === "monthly"){
-    const cat = b.monthlyCategories.find(c => c.id === id);
+    const cat = (b.monthlyCategories || []).find(c => c.id === id);
     if (!cat) return;
 
     const res = await promptForm("Edit Monthly Category", [
@@ -535,13 +557,13 @@ async function editCategory(type, id){
     ensureAnnualYear(year);
     const y = state.annualByYear[year];
 
-    const cat = y.categories.find(c => c.id === id);
+    const cat = (y.categories || []).find(c => c.id === id);
     if (!cat) return;
 
     const res = await promptForm(`Edit Annual Category (${year})`, [
       { key:"name", label:"Name", type:"text", value: cat.name },
       { key:"target", label:"Annual Target", type:"money", value: moneyToInput(cat.target) },
-      { key:"balance", label:"Balance", type:"money", value: moneyToInput(cat.balance) }
+      { key:"balance", label:"Starting Balance", type:"money", value: moneyToInput(cat.balance) }
     ]);
     if (!res) return;
 
@@ -561,14 +583,14 @@ function deleteCategory(type, id){
   if (type === "monthly"){
     if (!confirm(`Delete this monthly category? Existing expenses will move to "${EXTRA_NAME}".`)) return;
 
-    // Bug C: move THIS MONTH monthly expenses to Extra
+    // Move THIS MONTH monthly expenses to Extra
     (b.expenses || []).forEach(ex => {
       if (ex.type === "monthly" && ex.categoryId === id){
         ex.categoryId = EXTRA_ID;
       }
     });
 
-    b.monthlyCategories = b.monthlyCategories.filter(c => c.id !== id);
+    b.monthlyCategories = (b.monthlyCategories || []).filter(c => c.id !== id);
 
   } else {
     const year = getYearFromMonthKey(currentMonthKey);
@@ -586,10 +608,10 @@ function deleteCategory(type, id){
       });
     });
 
-    // Delete contributions for that category (year scope)
+    // Delete contributions for that category
     state.annualByYear[year].contributions = (state.annualByYear[year].contributions || []).filter(c => c.categoryId !== id);
 
-    // Remove the annual category (year scope)
+    // Remove the annual category
     state.annualByYear[year].categories = (state.annualByYear[year].categories || []).filter(c => c.id !== id);
   }
 
@@ -601,14 +623,15 @@ function deleteCategory(type, id){
 
 // -------------------- Expense modal --------------------
 function openExpenseModal(prefill){
-  const b = getBudget(currentMonthKey);
-  if (!b){
+  const currentBudget = getBudget(currentMonthKey);
+  if (!currentBudget){
     alert("Create this month budget first.");
     return;
   }
 
   refreshExpenseCategoryDropdown();
 
+  // If no categories exist, block adding expenses (Extra is not selectable)
   if (expCategory.options.length === 0){
     alert("Create at least one category first.");
     return;
@@ -623,17 +646,21 @@ function openExpenseModal(prefill){
   expDate.value = prefill.dateISO ?? todayISO();
   expNote.value = prefill.note ?? "";
 
+  // If editing an annual expense from another month, we store which budget to update
+  expenseModal.dataset.editingId = prefill.id || "";
+  expenseModal.dataset.editingMonthKey = prefill._monthKey || "";
+
+  // preselect category if provided (must not be Extra)
   if (prefill?.type && prefill?.categoryId && prefill.categoryId !== EXTRA_ID){
     const key = `${prefill.type}:${prefill.categoryId}`;
     const exists = Array.from(expCategory.options).some(o => o.value === key);
     if (exists) expCategory.value = key;
     else expCategory.selectedIndex = 0;
   } else {
-    // editing an Extra expense => force reassign
+    // editing an Extra expense => force user to choose a real category
     expCategory.selectedIndex = 0;
   }
 
-  expenseModal.dataset.editingId = prefill.id || "";
   openModal(expenseModal);
   expVendor.focus();
 }
@@ -649,17 +676,24 @@ function refreshExpenseCategoryDropdown(){
   const opts = [];
 
   // Monthly categories (exclude Extra)
-  b.monthlyCategories.forEach(c => opts.push({ value:`monthly:${c.id}`, label:`(Monthly) ${c.name}` }));
+  (b.monthlyCategories || []).forEach(c => opts.push({ value:`monthly:${c.id}`, label:`(Monthly) ${c.name}` }));
 
-  // Annual categories (YEAR scoped; exclude Extra)
+  // Annual categories (year-scoped; exclude Extra)
   (y.categories || []).forEach(c => opts.push({ value:`annual:${c.id}`, label:`(Annual ${year}) ${c.name}` }));
 
   expCategory.innerHTML = opts.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join("");
 }
 
 function saveExpense({ keepOpen }){
-  const b = getBudget(currentMonthKey);
-  if (!b) return;
+  const editingId = expenseModal.dataset.editingId || "";
+  const editingMonthKey = expenseModal.dataset.editingMonthKey || "";
+
+  const monthKeyToSave = editingMonthKey || currentMonthKey;
+  const b = getBudget(monthKeyToSave);
+  if (!b){
+    alert("That month budget does not exist. Create it first.");
+    return;
+  }
 
   const vendor = expVendor.value.trim();
   const item = expItem.value.trim();
@@ -683,9 +717,14 @@ function saveExpense({ keepOpen }){
     return;
   }
 
-  // Validate annual category exists in this YEAR
+  // Annual expenses must belong to the current selected year (no rollover)
   if (type === "annual"){
     const year = getYearFromMonthKey(currentMonthKey);
+    if (!String(dateISO).startsWith(year + "-")){
+      alert(`Annual expense date must be within ${year}.`);
+      return;
+    }
+
     ensureAnnualYear(year);
     const y = state.annualByYear[year];
     const exists = (y.categories || []).some(c => c.id === categoryId);
@@ -695,15 +734,7 @@ function saveExpense({ keepOpen }){
     }
   }
 
-  const editingId = expenseModal.dataset.editingId || "";
   const existing = editingId ? (b.expenses || []).find(e => e.id === editingId) : null;
-
-  // Undo previous annual balance effect if needed
-  if (existing && existing.type === "annual"){
-    const year = getYearFromMonthKey(existing.dateISO?.slice(0,7) || currentMonthKey);
-    // existing annual expense always belongs to the year of its date; we use current month year for safety
-    adjustAnnualBalance(getYearFromMonthKey(currentMonthKey), existing.categoryId, +existing.amount);
-  }
 
   const record = {
     id: existing ? existing.id : uid(),
@@ -719,16 +750,12 @@ function saveExpense({ keepOpen }){
   if (existing) Object.assign(existing, record);
   else (b.expenses ||= []).push(record);
 
-  // Apply annual balance effect
-  if (type === "annual"){
-    adjustAnnualBalance(getYearFromMonthKey(currentMonthKey), categoryId, -amount);
-  }
-
   saveState();
   render();
 
   if (keepOpen){
     expenseModal.dataset.editingId = "";
+    expenseModal.dataset.editingMonthKey = "";
     expVendor.value = "";
     expItem.value = "";
     expAmount.value = "";
@@ -739,7 +766,7 @@ function saveExpense({ keepOpen }){
   }
 }
 
-// -------------------- Expense cards --------------------
+// -------------------- Expense cards (monthly table only) --------------------
 function bindExpenseCardActions(container){
   container.querySelectorAll("[data-del-exp]").forEach(btn => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); deleteExpense(btn.dataset.delExp); });
@@ -780,6 +807,7 @@ function editExpense(expId){
 
   openExpenseModal({
     id: ex.id,
+    _monthKey: currentMonthKey,
     type: ex.type,
     categoryId: ex.categoryId,
     vendor: ex.vendor,
@@ -799,13 +827,113 @@ function deleteExpense(expId){
 
   if (!confirm("Delete this expense?")) return;
 
-  const ex = b.expenses[idx];
-
-  if (ex.type === "annual"){
-    adjustAnnualBalance(getYearFromMonthKey(currentMonthKey), ex.categoryId, +ex.amount);
-  }
-
   b.expenses.splice(idx, 1);
+  saveState();
+  render();
+}
+
+// -------------------- Annual expense cards (YTD across year) --------------------
+function inlineAnnualExpenseCardHtml(ex){
+  const title = `${escapeHtml(ex.vendor || "")}${ex.item ? " • " + escapeHtml(ex.item) : ""}`.trim() || "(No vendor/item)";
+  const note = ex.note ? escapeHtml(ex.note) : "";
+  const mk = ex._monthKey || "";
+
+  return `
+    <div class="detail-card">
+      <div class="detail-card-top">
+        <div>
+          <div class="exp-main">${title}</div>
+          ${note ? `<div class="exp-sub">${note}</div>` : ``}
+          <div class="exp-sub">${escapeHtml(ex.dateISO || "")}${mk ? ` • ${escapeHtml(monthKeyToLabel(mk))}` : ``}</div>
+        </div>
+        <div class="money">${fmtMoney(ex.amount)}</div>
+      </div>
+      <div class="detail-actions">
+        <button class="icon-btn" data-edit-annual-exp="${ex.id}" data-annual-exp-mk="${escapeAttr(mk)}">Edit</button>
+        <button class="icon-btn" data-del-annual-exp="${ex.id}" data-annual-exp-mk="${escapeAttr(mk)}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindAnnualExpenseCardActions(container){
+  container.querySelectorAll("[data-edit-annual-exp]").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const expId = btn.dataset.editAnnualExp;
+      const mk = btn.dataset.annualExpMk || "";
+      editAnnualExpense(expId, mk);
+    });
+  });
+
+  container.querySelectorAll("[data-del-annual-exp]").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const expId = btn.dataset.delAnnualExp;
+      const mk = btn.dataset.annualExpMk || "";
+      deleteAnnualExpense(expId, mk);
+    });
+  });
+}
+
+function findAnnualExpenseByIdInYear(year, expId){
+  // returns { monthKey, budget, expense } or null
+  for (const [mk, bud] of Object.entries(state.budgets || {})){
+    if (!mk.startsWith(year + "-")) continue;
+    const ex = (bud.expenses || []).find(e => e.id === expId && e.type === "annual");
+    if (ex) return { monthKey: mk, budget: bud, expense: ex };
+  }
+  return null;
+}
+
+function editAnnualExpense(expId, monthKeyHint){
+  const year = getYearFromMonthKey(currentMonthKey);
+
+  let found = null;
+  if (monthKeyHint && state.budgets[monthKeyHint]){
+    const bud = state.budgets[monthKeyHint];
+    const ex = (bud.expenses || []).find(e => e.id === expId && e.type === "annual");
+    if (ex) found = { monthKey: monthKeyHint, budget: bud, expense: ex };
+  }
+  if (!found) found = findAnnualExpenseByIdInYear(year, expId);
+  if (!found) return;
+
+  const ex = found.expense;
+
+  openExpenseModal({
+    id: ex.id,
+    _monthKey: found.monthKey,  // critical: edit correct month budget
+    type: ex.type,
+    categoryId: ex.categoryId,
+    vendor: ex.vendor,
+    item: ex.item,
+    amount: ex.amount,
+    dateISO: ex.dateISO,
+    note: ex.note
+  });
+}
+
+function deleteAnnualExpense(expId, monthKeyHint){
+  const year = getYearFromMonthKey(currentMonthKey);
+
+  let found = null;
+  if (monthKeyHint && state.budgets[monthKeyHint]){
+    const bud = state.budgets[monthKeyHint];
+    const idx = (bud.expenses || []).findIndex(e => e.id === expId && e.type === "annual");
+    if (idx !== -1) found = { monthKey: monthKeyHint, budget: bud, index: idx };
+  }
+  if (!found){
+    const f = findAnnualExpenseByIdInYear(year, expId);
+    if (f){
+      const idx = (f.budget.expenses || []).findIndex(e => e.id === expId && e.type === "annual");
+      if (idx !== -1) found = { monthKey: f.monthKey, budget: f.budget, index: idx };
+    }
+  }
+  if (!found) return;
+
+  if (!confirm("Delete this annual expense?")) return;
+
+  found.budget.expenses.splice(found.index, 1);
   saveState();
   render();
 }
@@ -832,14 +960,11 @@ async function addContribution(catId){
     return;
   }
 
-  // Year-scoped, but date must be within this year (no rollover)
   const dateISO = res.dateISO || todayISO();
   if (!String(dateISO).startsWith(year + "-")){
     alert(`Contribution date must be within ${year}.`);
     return;
   }
-
-  cat.balance = fromCents(toCents(cat.balance) + toCents(amt));
 
   (y.contributions ||= []).push({
     id: uid(),
@@ -857,6 +982,9 @@ function bindContributionActions(container){
   container.querySelectorAll("[data-del-contrib]").forEach(btn => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); deleteContribution(btn.dataset.delContrib); });
   });
+  container.querySelectorAll("[data-edit-contrib]").forEach(btn => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); editContribution(btn.dataset.editContrib); });
+  });
 }
 
 function inlineContributionCardHtml(c){
@@ -872,6 +1000,7 @@ function inlineContributionCardHtml(c){
         <div class="money positive">${fmtMoney(c.amount)}</div>
       </div>
       <div class="detail-actions">
+        <button class="icon-btn" data-edit-contrib="${c.id}">Edit</button>
         <button class="icon-btn" data-del-contrib="${c.id}">Delete</button>
       </div>
     </div>
@@ -888,13 +1017,42 @@ function deleteContribution(contribId){
 
   if (!confirm("Delete this contribution?")) return;
 
-  const c = y.contributions[idx];
-  const cat = (y.categories || []).find(a => a.id === c.categoryId);
-  if (cat){
-    cat.balance = fromCents(toCents(cat.balance) - toCents(c.amount));
+  y.contributions.splice(idx, 1);
+  saveState();
+  render();
+}
+
+async function editContribution(contribId){
+  const year = getYearFromMonthKey(currentMonthKey);
+  ensureAnnualYear(year);
+
+  const y = state.annualByYear[year];
+  const c = (y.contributions || []).find(x => x.id === contribId);
+  if (!c) return;
+
+  const res = await promptForm("Edit Contribution", [
+    { key:"amount", label:"Amount", type:"money", value: moneyToInput(c.amount) },
+    { key:"dateISO", label:"Date", type:"date", value: c.dateISO || todayISO() },
+    { key:"note", label:"Note", type:"text", value: c.note || "" }
+  ]);
+  if (!res) return;
+
+  const amt = parseMoney(res.amount);
+  if (!amt || amt === 0){
+    alert("Amount must be greater than 0.");
+    return;
   }
 
-  y.contributions.splice(idx, 1);
+  const dateISO = res.dateISO || todayISO();
+  if (!String(dateISO).startsWith(year + "-")){
+    alert(`Contribution date must be within ${year}.`);
+    return;
+  }
+
+  c.amount = amt;
+  c.dateISO = dateISO;
+  c.note = (res.note || "").trim();
+
   saveState();
   render();
 }
@@ -907,26 +1065,22 @@ function ensureAnnualYear(year){
   }
 }
 
-function adjustAnnualBalance(year, categoryId, delta){
-  if (!categoryId || categoryId === EXTRA_ID) return;
-  ensureAnnualYear(year);
-  const y = state.annualByYear[year];
-  const cat = (y.categories || []).find(c => c.id === categoryId);
-  if (!cat) return;
-  cat.balance = fromCents(toCents(cat.balance) + toCents(delta));
-}
-
-function getAnnualCategoryBalance(year, categoryId){
-  ensureAnnualYear(year);
-  const y = state.annualByYear[year];
-  const cat = (y.categories || []).find(c => c.id === categoryId);
-  return cat ? (Number(cat.balance) || 0) : 0;
+function getAnnualYearExpenses(year){
+  const out = [];
+  for (const [mk, bud] of Object.entries(state.budgets || {})){
+    if (!mk.startsWith(year + "-")) continue;
+    (bud.expenses || []).forEach(ex => {
+      if (ex.type !== "annual") return;
+      out.push({ ...ex, _monthKey: mk });
+    });
+  }
+  return out;
 }
 
 // -------------------- YTD stats (annual expenses only) --------------------
 function getYearToDateAnnualStats(yearStr){
   const stats = {};
-  Object.entries(state.budgets).forEach(([mk, b]) => {
+  Object.entries(state.budgets || {}).forEach(([mk, b]) => {
     if (!mk.startsWith(yearStr + "-")) return;
     (b.expenses || []).forEach(ex => {
       if (ex.type !== "annual") return;
@@ -961,45 +1115,38 @@ function createBudgetForMonth(monthKey, copyPrev){
   if (copyPrev && prev){
     base.income = prev.income || 0;
 
-    // Monthly categories can be copied month-to-month
     base.monthlyCategories = (prev.monthlyCategories || []).map(c => ({
       id: uid(),
       name: c.name,
       budgeted: c.budgeted || 0
     }));
 
-    // IMPORTANT: annual categories are NOT copied here (year scoped)
+    // NOTE: annual categories are NOT copied here (year scoped)
   }
 
   state.budgets[monthKey] = base;
   saveState();
 }
 
-// -------------------- Budget / expense helpers --------------------
-function getBudget(monthKey){
-  return state.budgets[monthKey] || null;
-}
-
-function getMonthExpenses(budget, type){
-  return (budget.expenses || []).filter(e => e.type === type);
-}
-
-// -------------------- Ring helpers --------------------
-function progressPct(spentC, totalC){
+// -------------------- Ring helpers (remaining-based) --------------------
+function remainingPct(leftC, totalC){
   if (totalC <= 0){
-    return spentC > 0 ? 1 : 0;
+    // If no total, show empty unless we’re overspent (then full red is too noisy; keep empty)
+    return 0;
   }
-  const p = spentC / totalC;
+  // clamp(left/total, 0..1)
+  const p = leftC / totalC;
   if (p <= 0) return 0;
   if (p >= 1) return 1;
   return p;
 }
 
-function ringTone(spentC, totalC){
-  if (totalC > 0 && spentC > totalC) return "bad";
-  const pct = progressPct(spentC, totalC);
-  if (pct < 0.65) return "accent";
-  if (pct < 0.90) return "warn";
+function remainingTone(leftC, totalC){
+  // Overspent -> red, otherwise green (accent) with optional warning threshold
+  if (totalC > 0 && leftC < 0) return "bad";
+  const pct = remainingPct(leftC, totalC);
+  if (pct >= 0.35) return "accent";
+  if (pct >= 0.10) return "warn";
   return "bad";
 }
 
@@ -1083,10 +1230,7 @@ function promptForm(title, fields){
 function loadState(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw){
-      // If upgrading from v0.6 storage key, we intentionally do NOT auto-migrate here.
-      return { budgets:{}, annualByYear:{} };
-    }
+    if (!raw) return { budgets:{}, annualByYear:{} };
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return { budgets:{}, annualByYear:{} };
     if (!parsed.budgets) parsed.budgets = {};
@@ -1101,6 +1245,14 @@ function saveState(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
+function getBudget(monthKey){
+  return state.budgets[monthKey] || null;
+}
+
+function getMonthExpenses(budget, type){
+  return (budget.expenses || []).filter(e => e.type === type);
+}
+
 function seedMonthSelect(){
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth() - 24, 1);
@@ -1111,7 +1263,7 @@ function seedMonthSelect(){
     keys.push(getMonthKey(d));
   }
 
-  Object.keys(state.budgets).forEach(k => { if (!keys.includes(k)) keys.push(k); });
+  Object.keys(state.budgets || {}).forEach(k => { if (!keys.includes(k)) keys.push(k); });
 
   keys.sort();
   monthSelect.innerHTML = keys.map(k => `<option value="${k}">${escapeHtml(monthKeyToLabel(k))}</option>`).join("");
@@ -1173,10 +1325,28 @@ function sumCents(arr){
   return arr.reduce((a,b)=> a + (Number(b) || 0), 0);
 }
 
+function sumMoney(arr){
+  return arr.reduce((a,b)=> a + (Number(b) || 0), 0);
+}
+
 function fmtMoney(n){
   const val = Number(n);
   const safe = Number.isFinite(val) ? val : 0;
   return safe.toLocaleString(undefined, { style:"currency", currency:"USD" });
+}
+
+// No cents, negatives like -$50 (not parentheses)
+function fmtMoney0(n){
+  const val = Number(n);
+  const safe = Number.isFinite(val) ? val : 0;
+  const abs = Math.abs(safe);
+  const formatted = abs.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  });
+  return safe < 0 ? "-" + formatted : formatted;
 }
 
 function moneyToInput(n){
