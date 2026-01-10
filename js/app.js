@@ -1,12 +1,13 @@
-/* SimpleSpend v0.1 (localStorage prototype)
+/* SimpleSpend (localStorage prototype)
    - Month-first budgets
-   - Monthly categories: budgeted + expenses
-   - Annual categories: target + balance + contributions + expenses, with YTD spend
+   - Monthly categories: budgeted + expenses (inline expand)
+   - Annual categories: target + balance + contributions + expenses (inline expand)
    - Planned Remaining + Left to Spend
+   - Version badge reads VERSION.txt
 */
 
-const VERSION = "v0.1";
-const STORAGE_KEY = "simplespend_v01";
+const APP_FALLBACK_VERSION = "v0.2";
+const STORAGE_KEY = "simplespend_v02";
 
 const monthSelect = document.getElementById("monthSelect");
 const prevMonthBtn = document.getElementById("prevMonthBtn");
@@ -28,12 +29,6 @@ const addMonthlyCategoryBtn = document.getElementById("addMonthlyCategoryBtn");
 const addAnnualCategoryBtn = document.getElementById("addAnnualCategoryBtn");
 const addExpenseBtn = document.getElementById("addExpenseBtn");
 
-const categoryDetailCard = document.getElementById("categoryDetailCard");
-const detailTitle = document.getElementById("detailTitle");
-const detailSubtitle = document.getElementById("detailSubtitle");
-const detailExpenses = document.getElementById("detailExpenses");
-const closeDetailBtn = document.getElementById("closeDetailBtn");
-
 const expenseModal = document.getElementById("expenseModal");
 const closeExpenseModalBtn = document.getElementById("closeExpenseModalBtn");
 const expVendor = document.getElementById("expVendor");
@@ -52,7 +47,7 @@ const closePromptModalBtn = document.getElementById("closePromptModalBtn");
 const promptCancelBtn = document.getElementById("promptCancelBtn");
 const promptOkBtn = document.getElementById("promptOkBtn");
 
-document.getElementById("versionBadge").textContent = VERSION;
+let expanded = { type: null, id: null }; // {type:"monthly"|"annual", id:"..."} inline expand state
 
 // -------------------- Data Model --------------------
 /*
@@ -62,13 +57,11 @@ state = {
       income: number,
       monthlyCategories: [{id, name, budgeted}],
       annualCategories: [{id, name, target, balance}],
-      // month expenses:
       expenses: [{
         id, type: "monthly"|"annual",
         categoryId,
         vendor, item, amount, dateISO, note
       }],
-      // month contributions (annual sinking deposits):
       contributions: [{
         id, categoryId, amount, dateISO, note
       }]
@@ -81,10 +74,27 @@ let state = loadState();
 let currentMonthKey = getMonthKey(new Date());
 
 // -------------------- Init --------------------
+loadVersionBadge();
 seedMonthSelect();
 setMonth(currentMonthKey);
 wireEvents();
 render();
+
+// -------------------- Version (VERSION.txt) --------------------
+async function loadVersionBadge(){
+  const badge = document.getElementById("versionBadge");
+  if (!badge) return;
+
+  // Works on GitHub Pages. If you open index.html as a local file, fetch may fail — fallback handles it.
+  try{
+    const res = await fetch("./VERSION.txt", { cache: "no-store" });
+    if (!res.ok) throw new Error("Bad response");
+    const txt = (await res.text()).trim();
+    badge.textContent = txt || APP_FALLBACK_VERSION;
+  } catch {
+    badge.textContent = APP_FALLBACK_VERSION;
+  }
+}
 
 // -------------------- Events --------------------
 function wireEvents(){
@@ -114,11 +124,13 @@ function wireEvents(){
       { key:"budgeted", label:"Budgeted", type:"money", placeholder:"0.00" }
     ]);
     if (!res) return;
+
     b.monthlyCategories.push({
       id: uid(),
       name: res.name.trim() || "Unnamed",
       budgeted: parseMoney(res.budgeted)
     });
+
     saveState();
     render();
   });
@@ -132,21 +144,19 @@ function wireEvents(){
       { key:"balance", label:"Starting Balance", type:"money", placeholder:"0.00" }
     ]);
     if (!res) return;
+
     b.annualCategories.push({
       id: uid(),
       name: res.name.trim() || "Unnamed",
       target: parseMoney(res.target),
       balance: parseMoney(res.balance)
     });
+
     saveState();
     render();
   });
 
   addExpenseBtn.addEventListener("click", () => openExpenseModal());
-
-  closeDetailBtn.addEventListener("click", () => {
-    categoryDetailCard.classList.add("hidden");
-  });
 
   closeExpenseModalBtn.addEventListener("click", () => closeModal(expenseModal));
   expenseModal.addEventListener("click", (e) => {
@@ -165,14 +175,13 @@ function wireEvents(){
 
 // -------------------- Rendering --------------------
 function render(){
-  seedMonthSelect(); // ensure dropdown stays current
+  seedMonthSelect();
   monthSelect.value = currentMonthKey;
 
   const b = getBudget(currentMonthKey);
   if (!b){
     monthMissingState.classList.remove("hidden");
     monthExistsState.classList.add("hidden");
-    categoryDetailCard.classList.add("hidden");
     return;
   }
 
@@ -194,7 +203,7 @@ function renderTotalsOnly(){
   const monthlyBudgeted = sum(b.monthlyCategories.map(c => c.budgeted));
   const monthlySpent = sum(getMonthExpenses(b, "monthly").map(x => x.amount));
 
-  const planned = (b.income || 0) - monthlyBudgeted;
+  const planned = (b.income || 0) - monthlyBudgeted; // can go negative (approved)
   const left = (b.income || 0) - monthlySpent;
 
   plannedRemainingEl.textContent = fmtMoney(planned);
@@ -204,6 +213,7 @@ function renderTotalsOnly(){
   leftToSpendEl.className = "stat-value " + (left < 0 ? "negative" : "positive");
 }
 
+// -------------------- Monthly Table (inline expand) --------------------
 function renderMonthlyTable(){
   const b = getBudget(currentMonthKey);
   const expenses = getMonthExpenses(b, "monthly");
@@ -218,19 +228,23 @@ function renderMonthlyTable(){
     </div>
   `;
 
-  const rows = b.monthlyCategories.map(cat => {
+  let html = head;
+
+  if (!b.monthlyCategories.length){
+    monthlyTable.innerHTML = head + emptyRow("No monthly categories yet. Add one.");
+    return;
+  }
+
+  b.monthlyCategories.forEach(cat => {
     const spent = sum(expenses.filter(e => e.categoryId === cat.id).map(e => e.amount));
     const remaining = (cat.budgeted || 0) - spent;
-
     const remClass = remaining < 0 ? "negative" : "positive";
-    const hint = spent > 0 ? `<span class="small-pill">${expenses.filter(e=>e.categoryId===cat.id).length} tx</span>` : "";
 
-    return `
-      <div class="trow" data-open-category="monthly:${cat.id}">
-        <div>
-          <div>${escapeHtml(cat.name)}</div>
-          <div class="cell-muted">${hint}</div>
-        </div>
+    const isOpen = expanded.type === "monthly" && expanded.id === cat.id;
+
+    html += `
+      <div class="trow" data-toggle-category="monthly:${cat.id}">
+        <div><div>${escapeHtml(cat.name)}</div></div>
         <div class="money">${fmtMoney(cat.budgeted)}</div>
         <div class="money">${fmtMoney(spent)}</div>
         <div class="money ${remClass}">${fmtMoney(remaining)}</div>
@@ -240,19 +254,42 @@ function renderMonthlyTable(){
         </div>
       </div>
     `;
-  }).join("");
 
-  monthlyTable.innerHTML = head + (rows || emptyRow("No monthly categories yet. Add one."));
+    if (isOpen){
+      const list = expenses
+        .filter(e => (e.categoryId || null) === cat.id)
+        .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
 
-  monthlyTable.querySelectorAll("[data-open-category]").forEach(el => {
-    el.addEventListener("click", (e) => {
-      // ignore clicks on buttons
+      html += `
+        <div class="detail-row">
+          <div class="detail-inner">
+            <div class="detail-muted">${monthKeyToLabel(currentMonthKey)} • Monthly</div>
+            ${list.length ? `
+              <div class="detail-list">
+                ${list.map(ex => inlineExpenseCardHtml(ex)).join("")}
+              </div>
+            ` : `<div class="detail-muted">No expenses for this category in this month.</div>`}
+          </div>
+        </div>
+      `;
+    }
+  });
+
+  monthlyTable.innerHTML = html;
+
+  // Toggle open/close
+  monthlyTable.querySelectorAll("[data-toggle-category]").forEach(row => {
+    row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
-      const [type, id] = el.dataset.openCategory.split(":");
-      openCategoryDetail(type, id);
+      const [type, id] = row.dataset.toggleCategory.split(":");
+      expanded = (expanded.type === type && expanded.id === id)
+        ? { type:null, id:null }
+        : { type, id };
+      render();
     });
   });
 
+  // Edit / Delete category
   monthlyTable.querySelectorAll("[data-edit-monthly]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -261,10 +298,11 @@ function renderMonthlyTable(){
       if (!cat) return;
 
       const res = await promptForm("Edit Monthly Category", [
-        { key:"name", label:"Name", type:"text", placeholder:"", value: cat.name },
-        { key:"budgeted", label:"Budgeted", type:"money", placeholder:"0.00", value: moneyToInput(cat.budgeted) }
+        { key:"name", label:"Name", type:"text", value: cat.name },
+        { key:"budgeted", label:"Budgeted", type:"money", value: moneyToInput(cat.budgeted) }
       ]);
       if (!res) return;
+
       cat.name = res.name.trim() || cat.name;
       cat.budgeted = parseMoney(res.budgeted);
 
@@ -277,24 +315,33 @@ function renderMonthlyTable(){
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const id = btn.dataset.delMonthly;
+
       if (!confirm("Delete this monthly category? Expenses will remain but be uncategorized (you can reassign).")) return;
 
       b.monthlyCategories = b.monthlyCategories.filter(c => c.id !== id);
-      // orphan expenses in this month
       b.expenses.forEach(ex => {
         if (ex.type === "monthly" && ex.categoryId === id) ex.categoryId = null;
       });
+
+      if (expanded.type === "monthly" && expanded.id === id) expanded = { type:null, id:null };
 
       saveState();
       render();
     });
   });
+
+  // Expense actions inside expanded detail
+  monthlyTable.querySelectorAll("[data-del-exp]").forEach(btn => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); deleteExpense(btn.dataset.delExp); });
+  });
+  monthlyTable.querySelectorAll("[data-edit-exp]").forEach(btn => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); editExpense(btn.dataset.editExp); });
+  });
 }
 
+// -------------------- Annual Table (inline expand + delete contrib) --------------------
 function renderAnnualTable(){
   const b = getBudget(currentMonthKey);
-
-  // annual YTD calculations need all months in current year
   const year = currentMonthKey.slice(0,4);
   const ytd = getYearToDateAnnualStats(year);
 
@@ -308,13 +355,25 @@ function renderAnnualTable(){
     </div>
   `;
 
-  const rows = b.annualCategories.map(cat => {
+  let html = head;
+
+  if (!b.annualCategories.length){
+    annualTable.innerHTML = head + emptyRow("No annual categories yet. Add one.");
+    return;
+  }
+
+  const monthAnnualEx = getMonthExpenses(b, "annual");
+  const monthContrib = (b.contributions || []);
+
+  b.annualCategories.forEach(cat => {
     const stats = ytd[cat.id] || { spent: 0 };
     const remainingOfTarget = (cat.target || 0) - (stats.spent || 0);
     const remClass = remainingOfTarget < 0 ? "negative" : "positive";
 
-    return `
-      <div class="trow" data-open-category="annual:${cat.id}" style="grid-template-columns: 1.2fr .7fr .7fr .7fr auto;">
+    const isOpen = expanded.type === "annual" && expanded.id === cat.id;
+
+    html += `
+      <div class="trow" data-toggle-category="annual:${cat.id}" style="grid-template-columns: 1.2fr .7fr .7fr .7fr auto;">
         <div>
           <div>${escapeHtml(cat.name)}</div>
           <div class="cell-muted">
@@ -331,18 +390,57 @@ function renderAnnualTable(){
         </div>
       </div>
     `;
-  }).join("");
 
-  annualTable.innerHTML = head + (rows || emptyRow("No annual categories yet. Add one."));
+    if (isOpen){
+      const exList = monthAnnualEx
+        .filter(e => (e.categoryId || null) === cat.id)
+        .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
 
-  annualTable.querySelectorAll("[data-open-category]").forEach(el => {
-    el.addEventListener("click", (e) => {
+      const contribList = monthContrib
+        .filter(c => (c.categoryId || null) === cat.id)
+        .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
+
+      const hasAny = contribList.length || exList.length;
+
+      html += `
+        <div class="detail-row">
+          <div class="detail-inner">
+            <div class="detail-muted">${monthKeyToLabel(currentMonthKey)} • Annual (this month)</div>
+
+            ${contribList.length ? `
+              <div class="detail-muted">Contributions</div>
+              <div class="detail-list">
+                ${contribList.map(c => inlineContributionCardHtml(c)).join("")}
+              </div>
+            ` : ``}
+
+            ${exList.length ? `
+              <div class="detail-muted">Expenses</div>
+              <div class="detail-list">
+                ${exList.map(ex => inlineExpenseCardHtml(ex)).join("")}
+              </div>
+            ` : (hasAny ? `` : `<div class="detail-muted">No annual activity for this category in this month.</div>`)}
+          </div>
+        </div>
+      `;
+    }
+  });
+
+  annualTable.innerHTML = html;
+
+  // Toggle open/close
+  annualTable.querySelectorAll("[data-toggle-category]").forEach(row => {
+    row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
-      const [type, id] = el.dataset.openCategory.split(":");
-      openCategoryDetail(type, id);
+      const [type, id] = row.dataset.toggleCategory.split(":");
+      expanded = (expanded.type === type && expanded.id === id)
+        ? { type:null, id:null }
+        : { type, id };
+      render();
     });
   });
 
+  // Contribute
   annualTable.querySelectorAll("[data-contrib]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -358,6 +456,11 @@ function renderAnnualTable(){
       if (!res) return;
 
       const amt = parseMoney(res.amount);
+      if (!amt || amt === 0){
+        alert("Amount must be greater than 0.");
+        return;
+      }
+
       cat.balance = (cat.balance || 0) + amt;
 
       b.contributions.push({
@@ -373,6 +476,7 @@ function renderAnnualTable(){
     });
   });
 
+  // Edit annual
   annualTable.querySelectorAll("[data-edit-annual]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -396,10 +500,12 @@ function renderAnnualTable(){
     });
   });
 
+  // Delete annual
   annualTable.querySelectorAll("[data-del-annual]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const id = btn.dataset.delAnnual;
+
       if (!confirm("Delete this annual category? Expenses remain but become uncategorized.")) return;
 
       b.annualCategories = b.annualCategories.filter(c => c.id !== id);
@@ -408,134 +514,64 @@ function renderAnnualTable(){
       });
       b.contributions = b.contributions.filter(c => c.categoryId !== id);
 
+      if (expanded.type === "annual" && expanded.id === id) expanded = { type:null, id:null };
+
       saveState();
       render();
     });
   });
-}
 
-// -------------------- Category Detail --------------------
-function openCategoryDetail(type, categoryId){
-  const b = getBudget(currentMonthKey);
-  if (!b) return;
-
-  const monthLabel = monthKeyToLabel(currentMonthKey);
-
-  if (type === "monthly"){
-    const cat = b.monthlyCategories.find(c => c.id === categoryId);
-    detailTitle.textContent = cat ? cat.name : "(Uncategorized)";
-    detailSubtitle.textContent = `${monthLabel} • Monthly`;
-
-    const ex = getMonthExpenses(b, "monthly").filter(e => (e.categoryId || null) === (categoryId || null));
-    renderExpenseList(ex);
-  } else {
-    const cat = b.annualCategories.find(c => c.id === categoryId);
-    detailTitle.textContent = cat ? cat.name : "(Uncategorized)";
-    detailSubtitle.textContent = `${monthLabel} • Annual (this month)`;
-
-    // Show THIS month: annual expenses + contributions for this category
-    const monthAnnualEx = getMonthExpenses(b, "annual").filter(e => (e.categoryId || null) === (categoryId || null));
-    const monthContrib = (b.contributions || []).filter(c => (c.categoryId || null) === (categoryId || null));
-
-    renderAnnualDetailList(monthAnnualEx, monthContrib);
-  }
-
-  categoryDetailCard.classList.remove("hidden");
-  categoryDetailCard.scrollIntoView({ behavior:"smooth", block:"start" });
-}
-
-function renderExpenseList(list){
-  if (!list.length){
-    detailExpenses.innerHTML = `<div class="cell-muted">No expenses found for this category in this month.</div>`;
-    return;
-  }
-
-  detailExpenses.innerHTML = list
-    .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
-    .map(ex => expenseCardHtml(ex))
-    .join("");
-
-  detailExpenses.querySelectorAll("[data-del-exp]").forEach(btn => {
-    btn.addEventListener("click", () => deleteExpense(btn.dataset.delExp));
+  // Expense actions inside expanded detail
+  annualTable.querySelectorAll("[data-del-exp]").forEach(btn => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); deleteExpense(btn.dataset.delExp); });
+  });
+  annualTable.querySelectorAll("[data-edit-exp]").forEach(btn => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); editExpense(btn.dataset.editExp); });
   });
 
-  detailExpenses.querySelectorAll("[data-edit-exp]").forEach(btn => {
-    btn.addEventListener("click", () => editExpense(btn.dataset.editExp));
+  // Contribution delete actions
+  annualTable.querySelectorAll("[data-del-contrib]").forEach(btn => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); deleteContribution(btn.dataset.delContrib); });
   });
 }
 
-function renderAnnualDetailList(expenses, contributions){
-  const items = [];
-
-  contributions.forEach(c => {
-    items.push({
-      kind: "contrib",
-      id: c.id,
-      dateISO: c.dateISO,
-      amount: c.amount,
-      note: c.note
-    });
-  });
-
-  expenses.forEach(e => {
-    items.push({
-      kind: "expense",
-      ...e
-    });
-  });
-
-  if (!items.length){
-    detailExpenses.innerHTML = `<div class="cell-muted">No annual activity for this category in this month.</div>`;
-    return;
-  }
-
-  items.sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
-
-  detailExpenses.innerHTML = items.map(it => {
-    if (it.kind === "contrib"){
-      return `
-        <div class="exp-card">
-          <div class="exp-top">
-            <div>
-              <div class="exp-main">Contribute</div>
-              <div class="exp-sub">${escapeHtml(it.note || "")}</div>
-            </div>
-            <div class="money positive">${fmtMoney(it.amount)}</div>
-          </div>
-          <div class="exp-sub">${escapeHtml(it.dateISO || "")}</div>
-        </div>
-      `;
-    }
-    // expense
-    return expenseCardHtml(it);
-  }).join("");
-
-  detailExpenses.querySelectorAll("[data-del-exp]").forEach(btn => {
-    btn.addEventListener("click", () => deleteExpense(btn.dataset.delExp));
-  });
-
-  detailExpenses.querySelectorAll("[data-edit-exp]").forEach(btn => {
-    btn.addEventListener("click", () => editExpense(btn.dataset.editExp));
-  });
-}
-
-function expenseCardHtml(ex){
+// -------------------- Inline cards for expanded details --------------------
+function inlineExpenseCardHtml(ex){
   const title = `${escapeHtml(ex.vendor || "")}${ex.item ? " • " + escapeHtml(ex.item) : ""}`.trim() || "(No vendor/item)";
   const note = ex.note ? escapeHtml(ex.note) : "";
-  const catPill = `<span class="small-pill">${ex.type === "annual" ? "Annual" : "Monthly"}</span>`;
+
   return `
-    <div class="exp-card">
-      <div class="exp-top">
+    <div class="detail-card">
+      <div class="detail-card-top">
         <div>
-          <div class="exp-main">${title} ${catPill}</div>
-          <div class="exp-sub">${note}</div>
+          <div class="exp-main">${title}</div>
+          ${note ? `<div class="exp-sub">${note}</div>` : ``}
+          <div class="exp-sub">${escapeHtml(ex.dateISO || "")}</div>
         </div>
         <div class="money">${fmtMoney(ex.amount)}</div>
       </div>
-      <div class="exp-sub">${escapeHtml(ex.dateISO || "")}</div>
-      <div class="exp-actions" style="margin-top:10px;">
+      <div class="detail-actions">
         <button class="icon-btn" data-edit-exp="${ex.id}">Edit</button>
         <button class="icon-btn" data-del-exp="${ex.id}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function inlineContributionCardHtml(c){
+  const note = c.note ? escapeHtml(c.note) : "";
+  return `
+    <div class="detail-card">
+      <div class="detail-card-top">
+        <div>
+          <div class="exp-main">Contribute</div>
+          ${note ? `<div class="exp-sub">${note}</div>` : ``}
+          <div class="exp-sub">${escapeHtml(c.dateISO || "")}</div>
+        </div>
+        <div class="money positive">${fmtMoney(c.amount)}</div>
+      </div>
+      <div class="detail-actions">
+        <button class="icon-btn" data-del-contrib="${c.id}">Delete</button>
       </div>
     </div>
   `;
@@ -581,7 +617,9 @@ function refreshExpenseCategoryDropdown(){
     opts.push({ value:`annual:${c.id}`, label:`(Annual) ${c.name}` });
   });
 
-  expCategory.innerHTML = opts.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join("");
+  expCategory.innerHTML = opts
+    .map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`)
+    .join("");
 }
 
 function saveExpense({ keepOpen }){
@@ -605,7 +643,7 @@ function saveExpense({ keepOpen }){
   const editingId = expenseModal.dataset.editingId || "";
   const existing = editingId ? b.expenses.find(e => e.id === editingId) : null;
 
-  // If editing, revert any annual balance effect first
+  // If editing, revert annual balance effect first
   if (existing && existing.type === "annual"){
     adjustAnnualBalance(b, existing.categoryId, +existing.amount); // undo previous expense
   }
@@ -629,14 +667,13 @@ function saveExpense({ keepOpen }){
 
   // Apply annual expense to balance
   if (type === "annual"){
-    adjustAnnualBalance(b, categoryId, -amount);
+    adjustAnnualBalance(b, categoryId, -amount); // expense reduces balance
   }
 
   saveState();
   render();
 
   if (keepOpen){
-    // keep user in flow
     expenseModal.dataset.editingId = "";
     expVendor.value = "";
     expItem.value = "";
@@ -684,6 +721,28 @@ function editExpense(expId){
   });
 }
 
+// -------------------- Contributions (delete support) --------------------
+function deleteContribution(contribId){
+  const b = getBudget(currentMonthKey);
+  if (!b) return;
+
+  const idx = (b.contributions || []).findIndex(c => c.id === contribId);
+  if (idx === -1) return;
+
+  if (!confirm("Delete this contribution?")) return;
+
+  const c = b.contributions[idx];
+
+  // reverse the balance increase
+  const cat = b.annualCategories.find(a => a.id === c.categoryId);
+  if (cat) cat.balance = (cat.balance || 0) - (c.amount || 0);
+
+  b.contributions.splice(idx, 1);
+
+  saveState();
+  render();
+}
+
 // -------------------- Annual Balance Helpers --------------------
 function adjustAnnualBalance(budget, categoryId, delta){
   if (!categoryId) return; // uncategorized
@@ -695,7 +754,7 @@ function adjustAnnualBalance(budget, categoryId, delta){
 // -------------------- Month lifecycle --------------------
 function setMonth(monthKey){
   currentMonthKey = monthKey;
-  categoryDetailCard.classList.add("hidden");
+  expanded = { type: null, id: null };
   render();
 }
 
@@ -714,7 +773,7 @@ function createBudgetForMonth(monthKey, copyPrev){
   };
 
   if (copyPrev && prev){
-    // Copy categories + budgeted. Annual categories copy too (target + balance) to keep continuity.
+    // Copy categories + budgeted. Annual categories copy too (target + balance).
     base.income = prev.income || 0;
 
     base.monthlyCategories = prev.monthlyCategories.map(c => ({
@@ -737,7 +796,6 @@ function createBudgetForMonth(monthKey, copyPrev){
 
 // -------------------- Year-to-date stats --------------------
 function getYearToDateAnnualStats(yearStr){
-  // sum annual EXPENSES across ALL months in year, grouped by categoryId
   const stats = {}; // categoryId -> {spent}
   Object.entries(state.budgets).forEach(([mk, b]) => {
     if (!mk.startsWith(yearStr + "-")) return;
@@ -758,6 +816,7 @@ function promptForm(title, fields){
     promptFields.innerHTML = fields.map(f => {
       const value = f.value ?? "";
       const inputId = "pf_" + f.key;
+
       if (f.type === "date"){
         return `
           <label class="field field-span-2">
@@ -766,18 +825,24 @@ function promptForm(title, fields){
           </label>
         `;
       }
+
       if (f.type === "money"){
         return `
           <label class="field">
             <span>${escapeHtml(f.label)}</span>
-            <input class="input input-money" id="${inputId}" inputmode="decimal" placeholder="${escapeAttr(f.placeholder||"0.00")}" value="${escapeAttr(value)}" />
+            <input class="input input-money" id="${inputId}" inputmode="decimal"
+                   placeholder="${escapeAttr(f.placeholder||"0.00")}"
+                   value="${escapeAttr(value)}" />
           </label>
         `;
       }
+
       return `
         <label class="field field-span-2">
           <span>${escapeHtml(f.label)}</span>
-          <input class="input" id="${inputId}" type="text" placeholder="${escapeAttr(f.placeholder||"")}" value="${escapeAttr(value)}" />
+          <input class="input" id="${inputId}" type="text"
+                 placeholder="${escapeAttr(f.placeholder||"")}"
+                 value="${escapeAttr(value)}" />
         </label>
       `;
     }).join("");
@@ -808,7 +873,6 @@ function promptForm(title, fields){
 
     openModal(promptModal);
 
-    // focus first input
     const first = promptFields.querySelector("input");
     if (first) first.focus();
   });
@@ -841,7 +905,7 @@ function getMonthExpenses(budget, type){
 }
 
 function seedMonthSelect(){
-  // Populate a rolling window of months (past 24, next 12)
+  // rolling window (past 24, next 12)
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth() - 24, 1);
   const end = new Date(now.getFullYear(), now.getMonth() + 12, 1);
@@ -852,11 +916,12 @@ function seedMonthSelect(){
   }
 
   const existing = Object.keys(state.budgets);
-  // ensure any created months outside window still appear
   existing.forEach(k => { if (!keys.includes(k)) keys.push(k); });
 
   keys.sort();
-  monthSelect.innerHTML = keys.map(k => `<option value="${k}">${escapeHtml(monthKeyToLabel(k))}</option>`).join("");
+  monthSelect.innerHTML = keys
+    .map(k => `<option value="${k}">${escapeHtml(monthKeyToLabel(k))}</option>`)
+    .join("");
 }
 
 function getMonthKey(date){
@@ -911,7 +976,6 @@ function moneyToInput(n){
 
 function openModal(el){
   el.classList.remove("hidden");
-  // close on backdrop clicks with data-close
   const backdrop = el.querySelector(".modal-backdrop");
   if (backdrop) backdrop.dataset.close = "true";
 }
