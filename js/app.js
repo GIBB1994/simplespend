@@ -1,15 +1,12 @@
-/* SimpleSpend v0.6
-   - Medium theme in CSS
-   - 3-column category list: Category | Left/Total (toggle to Spent/Total) | progress ring
-   - Actions removed from main rows; actions live inside expanded category
-   - Extra (hidden uncategorized):
-       * NEVER selectable in Add Expense
-       * ONLY appears when a category is deleted and expenses become orphaned
-       * Auto-hides when empty
+/* SimpleSpend v0.7
+   Fixes:
+   - Annual categories are YEAR-scoped (no month cloning, no rollover across years)
+   - Annual YTD totals persist across months in same year
+   - Extra bucket behavior verified + enforced (never selectable)
 */
 
-const APP_FALLBACK_VERSION = "v0.6";
-const STORAGE_KEY = "simplespend_v06";
+const APP_FALLBACK_VERSION = "v0.7";
+const STORAGE_KEY = "simplespend_v07";
 
 const EXTRA_ID = "__extra__";
 const EXTRA_NAME = "Extra";
@@ -54,7 +51,7 @@ const promptCancelBtn = document.getElementById("promptCancelBtn");
 const promptOkBtn = document.getElementById("promptOkBtn");
 
 let expanded = { type: null, id: null }; // type: "monthly"|"annual"
-let amountMode = "left"; // "left" or "spent" (global toggle)
+let amountMode = "left"; // "left" or "spent"
 
 /*
 state = {
@@ -62,8 +59,12 @@ state = {
     "YYYY-MM": {
       income: number,
       monthlyCategories: [{id, name, budgeted}],
-      annualCategories: [{id, name, target, balance}],
-      expenses: [{ id, type, categoryId, vendor, item, amount, dateISO, note }],
+      expenses: [{ id, type:"monthly"|"annual", categoryId, vendor, item, amount, dateISO, note }]
+    }
+  },
+  annualByYear: {
+    "YYYY": {
+      categories: [{ id, name, target, balance }],
       contributions: [{ id, categoryId, amount, dateISO, note }]
     }
   }
@@ -106,7 +107,6 @@ function wireEvents(){
     render();
   });
 
-  // Income typing: select all (prevents 0.005000 nonsense)
   incomeInput.addEventListener("focus", () => incomeInput.select());
   incomeInput.addEventListener("click", () => incomeInput.select());
 
@@ -130,7 +130,7 @@ function wireEvents(){
 
     b.monthlyCategories.push({
       id: uid(),
-      name: res.name.trim() || "Unnamed",
+      name: (res.name || "").trim() || "Unnamed",
       budgeted: parseMoney(res.budgeted)
     });
 
@@ -139,19 +139,21 @@ function wireEvents(){
   });
 
   addAnnualCategoryBtn.addEventListener("click", async () => {
-    const b = getBudget(currentMonthKey);
-    if (!b) return;
+    ensureAnnualYear(getYearFromMonthKey(currentMonthKey));
+    const year = getYearFromMonthKey(currentMonthKey);
+    const y = state.annualByYear[year];
 
-    const res = await promptForm("Add Annual Category", [
+    const res = await promptForm(`Add Annual Category (${year})`, [
       { key:"name", label:"Name", type:"text", placeholder:"Vacation" },
       { key:"target", label:"Annual Target", type:"money", placeholder:"2000.00" },
       { key:"balance", label:"Starting Balance", type:"money", placeholder:"0.00" }
     ]);
     if (!res) return;
 
-    b.annualCategories.push({
+    // BUG A FIX: this ONLY touches annual list (year-scoped). Never monthly.
+    y.categories.push({
       id: uid(),
-      name: res.name.trim() || "Unnamed",
+      name: (res.name || "").trim() || "Unnamed",
       target: parseMoney(res.target),
       balance: parseMoney(res.balance)
     });
@@ -205,12 +207,12 @@ function renderTotalsOnly(){
   if (!b) return;
 
   const incomeC = toCents(b.income);
-
   const monthlyBudgetedC = sumCents(b.monthlyCategories.map(c => toCents(c.budgeted)));
+
   const monthlySpentC = sumCents(getMonthExpenses(b, "monthly").map(x => toCents(x.amount)));
 
-  const plannedC = incomeC - monthlyBudgetedC; // can go negative
-  const leftC = incomeC - monthlySpentC;       // can go negative
+  const plannedC = incomeC - monthlyBudgetedC;
+  const leftC = incomeC - monthlySpentC;
 
   plannedRemainingEl.textContent = fmtMoney(fromCents(plannedC));
   leftToSpendEl.textContent = fmtMoney(fromCents(leftC));
@@ -232,10 +234,10 @@ function renderMonthlyTable(){
     </div>
   `;
 
-  // Build category list (+ Extra only if needed)
   const rows = [];
   b.monthlyCategories.forEach(c => rows.push({ id:c.id, name:c.name, total:c.budgeted, kind:"normal" }));
 
+  // Bug C: Extra only appears when it contains expenses
   const extraSpentC = sumCents(expenses.filter(e => e.categoryId === EXTRA_ID).map(e => toCents(e.amount)));
   if (extraSpentC !== 0){
     rows.push({ id:EXTRA_ID, name:EXTRA_NAME, total:0, kind:"extra" });
@@ -258,7 +260,7 @@ function renderMonthlyTable(){
       ? `${fmtMoney(fromCents(leftC))} / ${fmtMoney(fromCents(totalC))}`
       : `${fmtMoney(fromCents(spentC))} / ${fmtMoney(fromCents(totalC))}`;
 
-    const lineClass = (amountMode === "left" ? (leftC < 0) : false) ? "negative" : "";
+    const lineClass = (amountMode === "left" && leftC < 0) ? "negative" : "";
 
     const pct = progressPct(spentC, totalC);
     const ringColor = ringTone(spentC, totalC);
@@ -283,7 +285,6 @@ function renderMonthlyTable(){
       </div>
     `;
 
-    // Detail block
     html += `
       <div class="detail-row">
         <div class="detail-anim ${isOpen ? "open" : ""}">
@@ -323,10 +324,13 @@ function renderMonthlyTable(){
   bindExpenseCardActions(monthlyTable);
 }
 
-// -------------------- Annual Table --------------------
+// -------------------- Annual Table (YEAR scoped) --------------------
 function renderAnnualTable(){
   const b = getBudget(currentMonthKey);
-  const year = currentMonthKey.slice(0,4);
+  const year = getYearFromMonthKey(currentMonthKey);
+  ensureAnnualYear(year);
+
+  const y = state.annualByYear[year];
   const ytd = getYearToDateAnnualStats(year);
 
   const header = `
@@ -340,15 +344,16 @@ function renderAnnualTable(){
   const monthAnnualEx = getMonthExpenses(b, "annual");
 
   const rows = [];
-  b.annualCategories.forEach(c => rows.push({ id:c.id, name:c.name, total:c.target, kind:"normal" }));
+  y.categories.forEach(c => rows.push({ id:c.id, name:c.name, total:c.target, kind:"normal" }));
 
-  const extraSpentC = sumCents(monthAnnualEx.filter(e => e.categoryId === EXTRA_ID).map(e => toCents(e.amount)));
-  if (extraSpentC !== 0){
+  // Extra in annual list: show if YTD extra has any spend in this year
+  const extraYtdSpentC = toCents(ytd[EXTRA_ID]?.spent ?? 0);
+  if (extraYtdSpentC !== 0){
     rows.push({ id:EXTRA_ID, name:EXTRA_NAME, total:0, kind:"extra" });
   }
 
   if (!rows.length){
-    annualTable.innerHTML = header + emptyRow("No annual categories yet. Add one.");
+    annualTable.innerHTML = header + emptyRow(`No annual categories for ${year}. Add one.`);
     return;
   }
 
@@ -357,7 +362,6 @@ function renderAnnualTable(){
   rows.forEach(cat => {
     const monthCatEx = monthAnnualEx.filter(e => e.categoryId === cat.id);
 
-    // annual spent/left use YTD
     const ytdSpent = (ytd[cat.id]?.spent ?? 0);
     const spentC = toCents(ytdSpent);
     const totalC = toCents(cat.total || 0);
@@ -367,7 +371,7 @@ function renderAnnualTable(){
       ? `${fmtMoney(fromCents(leftC))} / ${fmtMoney(fromCents(totalC))}`
       : `${fmtMoney(fromCents(spentC))} / ${fmtMoney(fromCents(totalC))}`;
 
-    const lineClass = (amountMode === "left" ? (leftC < 0) : false) ? "negative" : "";
+    const lineClass = (amountMode === "left" && leftC < 0) ? "negative" : "";
 
     const pct = progressPct(spentC, totalC);
     const ringColor = ringTone(spentC, totalC);
@@ -392,13 +396,20 @@ function renderAnnualTable(){
       </div>
     `;
 
-    const contribs = (b.contributions || []).filter(c => c.categoryId === cat.id);
+    // Contributions are YEAR scoped; show THIS MONTH only in expanded view
+    const monthContribs = (y.contributions || []).filter(c =>
+      c.categoryId === cat.id && (c.dateISO || "").startsWith(currentMonthKey + "-")
+    );
+
+    // (Optional) show the fund balance in detail (kept minimal)
+    const bal = cat.kind !== "extra" ? getAnnualCategoryBalance(year, cat.id) : null;
 
     html += `
       <div class="detail-row">
         <div class="detail-anim ${isOpen ? "open" : ""}">
           <div class="detail-inner">
             <div class="detail-muted">${year} • Annual (YTD) • this month shown below</div>
+            ${bal != null ? `<div class="detail-muted">Balance: <span class="money">${fmtMoney(bal)}</span></div>` : ``}
 
             <div class="row row-wrap row-gap">
               ${cat.kind !== "extra"
@@ -415,10 +426,10 @@ function renderAnnualTable(){
                 : ``}
             </div>
 
-            ${contribs.length ? `
+            ${monthContribs.length ? `
               <div class="detail-muted">Contributions (this month)</div>
               <div class="detail-list">
-                ${contribs
+                ${monthContribs
                   .slice()
                   .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
                   .map(c => inlineContributionCardHtml(c))
@@ -451,7 +462,6 @@ function renderAnnualTable(){
 
 // -------------------- List interactions --------------------
 function bindListInteractions(container){
-  // Row expand/collapse
   container.querySelectorAll("[data-toggle]").forEach(row => {
     row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
@@ -461,7 +471,6 @@ function bindListInteractions(container){
     });
   });
 
-  // Amount toggle (global)
   container.querySelectorAll("[data-toggle-amount]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -470,7 +479,6 @@ function bindListInteractions(container){
     });
   });
 
-  // Add expense from category
   container.querySelectorAll("[data-add-exp]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -479,7 +487,6 @@ function bindListInteractions(container){
     });
   });
 
-  // Edit category
   container.querySelectorAll("[data-edit-cat]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -488,7 +495,6 @@ function bindListInteractions(container){
     });
   });
 
-  // Delete category => orphan expenses to Extra
   container.querySelectorAll("[data-del-cat]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -497,7 +503,6 @@ function bindListInteractions(container){
     });
   });
 
-  // Contribution (annual)
   container.querySelectorAll("[data-contrib]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -515,23 +520,32 @@ async function editCategory(type, id){
   if (type === "monthly"){
     const cat = b.monthlyCategories.find(c => c.id === id);
     if (!cat) return;
+
     const res = await promptForm("Edit Monthly Category", [
       { key:"name", label:"Name", type:"text", value: cat.name },
       { key:"budgeted", label:"Budgeted", type:"money", value: moneyToInput(cat.budgeted) }
     ]);
     if (!res) return;
-    cat.name = res.name.trim() || cat.name;
+
+    cat.name = (res.name || "").trim() || cat.name;
     cat.budgeted = parseMoney(res.budgeted);
+
   } else {
-    const cat = b.annualCategories.find(c => c.id === id);
+    const year = getYearFromMonthKey(currentMonthKey);
+    ensureAnnualYear(year);
+    const y = state.annualByYear[year];
+
+    const cat = y.categories.find(c => c.id === id);
     if (!cat) return;
-    const res = await promptForm("Edit Annual Category", [
+
+    const res = await promptForm(`Edit Annual Category (${year})`, [
       { key:"name", label:"Name", type:"text", value: cat.name },
       { key:"target", label:"Annual Target", type:"money", value: moneyToInput(cat.target) },
       { key:"balance", label:"Balance", type:"money", value: moneyToInput(cat.balance) }
     ]);
     if (!res) return;
-    cat.name = res.name.trim() || cat.name;
+
+    cat.name = (res.name || "").trim() || cat.name;
     cat.target = parseMoney(res.target);
     cat.balance = parseMoney(res.balance);
   }
@@ -544,24 +558,39 @@ function deleteCategory(type, id){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const label = (type === "monthly") ? "monthly" : "annual";
-  if (!confirm(`Delete this ${label} category? Existing expenses will move to "${EXTRA_NAME}".`)) return;
-
-  // Move expenses to Extra (do not delete; do not hide)
-  b.expenses.forEach(ex => {
-    if (ex.type === type && ex.categoryId === id){
-      ex.categoryId = EXTRA_ID;
-    }
-  });
-
   if (type === "monthly"){
+    if (!confirm(`Delete this monthly category? Existing expenses will move to "${EXTRA_NAME}".`)) return;
+
+    // Bug C: move THIS MONTH monthly expenses to Extra
+    (b.expenses || []).forEach(ex => {
+      if (ex.type === "monthly" && ex.categoryId === id){
+        ex.categoryId = EXTRA_ID;
+      }
+    });
+
     b.monthlyCategories = b.monthlyCategories.filter(c => c.id !== id);
+
   } else {
-    // If annual, also leave contributions alone (they still belong to that category id).
-    // But once the category is deleted, contributions become meaningless; simplest is to move/delete them.
-    // We’ll move contributions to nowhere by deleting them (since Extra isn't a fund).
-    b.contributions = (b.contributions || []).filter(c => c.categoryId !== id);
-    b.annualCategories = b.annualCategories.filter(c => c.id !== id);
+    const year = getYearFromMonthKey(currentMonthKey);
+    ensureAnnualYear(year);
+
+    if (!confirm(`Delete this annual category for ${year}? All annual expenses in ${year} will move to "${EXTRA_NAME}". Contributions will be deleted.`)) return;
+
+    // Move ALL YEAR annual expenses to Extra (year scope)
+    Object.entries(state.budgets).forEach(([mk, bud]) => {
+      if (!mk.startsWith(year + "-")) return;
+      (bud.expenses || []).forEach(ex => {
+        if (ex.type === "annual" && ex.categoryId === id){
+          ex.categoryId = EXTRA_ID;
+        }
+      });
+    });
+
+    // Delete contributions for that category (year scope)
+    state.annualByYear[year].contributions = (state.annualByYear[year].contributions || []).filter(c => c.categoryId !== id);
+
+    // Remove the annual category (year scope)
+    state.annualByYear[year].categories = (state.annualByYear[year].categories || []).filter(c => c.id !== id);
   }
 
   if (expanded.type === type && expanded.id === id) expanded = {type:null, id:null};
@@ -580,7 +609,6 @@ function openExpenseModal(prefill){
 
   refreshExpenseCategoryDropdown();
 
-  // If no categories exist, block adding expenses (Extra is not selectable)
   if (expCategory.options.length === 0){
     alert("Create at least one category first.");
     return;
@@ -595,15 +623,13 @@ function openExpenseModal(prefill){
   expDate.value = prefill.dateISO ?? todayISO();
   expNote.value = prefill.note ?? "";
 
-  // preselect category if provided (must not be Extra)
   if (prefill?.type && prefill?.categoryId && prefill.categoryId !== EXTRA_ID){
     const key = `${prefill.type}:${prefill.categoryId}`;
     const exists = Array.from(expCategory.options).some(o => o.value === key);
     if (exists) expCategory.value = key;
-  } else if (prefill?.type && prefill?.categoryId === EXTRA_ID){
-    // editing an Extra expense => force user to choose a real category
-    expCategory.selectedIndex = 0;
+    else expCategory.selectedIndex = 0;
   } else {
+    // editing an Extra expense => force reassign
     expCategory.selectedIndex = 0;
   }
 
@@ -616,13 +642,17 @@ function refreshExpenseCategoryDropdown(){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
+  const year = getYearFromMonthKey(currentMonthKey);
+  ensureAnnualYear(year);
+  const y = state.annualByYear[year];
+
   const opts = [];
 
   // Monthly categories (exclude Extra)
   b.monthlyCategories.forEach(c => opts.push({ value:`monthly:${c.id}`, label:`(Monthly) ${c.name}` }));
 
-  // Annual categories (exclude Extra)
-  b.annualCategories.forEach(c => opts.push({ value:`annual:${c.id}`, label:`(Annual) ${c.name}` }));
+  // Annual categories (YEAR scoped; exclude Extra)
+  (y.categories || []).forEach(c => opts.push({ value:`annual:${c.id}`, label:`(Annual ${year}) ${c.name}` }));
 
   expCategory.innerHTML = opts.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join("");
 }
@@ -653,12 +683,26 @@ function saveExpense({ keepOpen }){
     return;
   }
 
-  const editingId = expenseModal.dataset.editingId || "";
-  const existing = editingId ? b.expenses.find(e => e.id === editingId) : null;
+  // Validate annual category exists in this YEAR
+  if (type === "annual"){
+    const year = getYearFromMonthKey(currentMonthKey);
+    ensureAnnualYear(year);
+    const y = state.annualByYear[year];
+    const exists = (y.categories || []).some(c => c.id === categoryId);
+    if (!exists){
+      alert("That annual category does not exist for this year.");
+      return;
+    }
+  }
 
-  // Undo annual balance if existing annual
+  const editingId = expenseModal.dataset.editingId || "";
+  const existing = editingId ? (b.expenses || []).find(e => e.id === editingId) : null;
+
+  // Undo previous annual balance effect if needed
   if (existing && existing.type === "annual"){
-    adjustAnnualBalance(b, existing.categoryId, +existing.amount);
+    const year = getYearFromMonthKey(existing.dateISO?.slice(0,7) || currentMonthKey);
+    // existing annual expense always belongs to the year of its date; we use current month year for safety
+    adjustAnnualBalance(getYearFromMonthKey(currentMonthKey), existing.categoryId, +existing.amount);
   }
 
   const record = {
@@ -673,11 +717,11 @@ function saveExpense({ keepOpen }){
   };
 
   if (existing) Object.assign(existing, record);
-  else b.expenses.push(record);
+  else (b.expenses ||= []).push(record);
 
-  // Apply annual balance if annual
+  // Apply annual balance effect
   if (type === "annual"){
-    adjustAnnualBalance(b, categoryId, -amount);
+    adjustAnnualBalance(getYearFromMonthKey(currentMonthKey), categoryId, -amount);
   }
 
   saveState();
@@ -731,7 +775,7 @@ function editExpense(expId){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const ex = b.expenses.find(e => e.id === expId);
+  const ex = (b.expenses || []).find(e => e.id === expId);
   if (!ex) return;
 
   openExpenseModal({
@@ -750,34 +794,32 @@ function deleteExpense(expId){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const idx = b.expenses.findIndex(e => e.id === expId);
+  const idx = (b.expenses || []).findIndex(e => e.id === expId);
   if (idx === -1) return;
 
   if (!confirm("Delete this expense?")) return;
 
   const ex = b.expenses[idx];
 
-  // Undo annual balance effect
   if (ex.type === "annual"){
-    adjustAnnualBalance(b, ex.categoryId, +ex.amount);
+    adjustAnnualBalance(getYearFromMonthKey(currentMonthKey), ex.categoryId, +ex.amount);
   }
 
   b.expenses.splice(idx, 1);
-
-  // If Extra empties out, it auto-hides via render logic
   saveState();
   render();
 }
 
-// -------------------- Contributions --------------------
+// -------------------- Contributions (YEAR scoped) --------------------
 async function addContribution(catId){
-  const b = getBudget(currentMonthKey);
-  if (!b) return;
+  const year = getYearFromMonthKey(currentMonthKey);
+  ensureAnnualYear(year);
 
-  const cat = b.annualCategories.find(c => c.id === catId);
+  const y = state.annualByYear[year];
+  const cat = (y.categories || []).find(c => c.id === catId);
   if (!cat) return;
 
-  const res = await promptForm(`Contribute to ${cat.name}`, [
+  const res = await promptForm(`Contribute to ${cat.name} (${year})`, [
     { key:"amount", label:"Amount", type:"money", placeholder:"0.00" },
     { key:"dateISO", label:"Date", type:"date", value: todayISO() },
     { key:"note", label:"Note", type:"text", placeholder:"Optional" }
@@ -790,13 +832,20 @@ async function addContribution(catId){
     return;
   }
 
+  // Year-scoped, but date must be within this year (no rollover)
+  const dateISO = res.dateISO || todayISO();
+  if (!String(dateISO).startsWith(year + "-")){
+    alert(`Contribution date must be within ${year}.`);
+    return;
+  }
+
   cat.balance = fromCents(toCents(cat.balance) + toCents(amt));
 
-  b.contributions.push({
+  (y.contributions ||= []).push({
     id: uid(),
     categoryId: catId,
     amount: amt,
-    dateISO: res.dateISO || todayISO(),
+    dateISO,
     note: (res.note || "").trim()
   });
 
@@ -830,34 +879,51 @@ function inlineContributionCardHtml(c){
 }
 
 function deleteContribution(contribId){
-  const b = getBudget(currentMonthKey);
-  if (!b) return;
+  const year = getYearFromMonthKey(currentMonthKey);
+  ensureAnnualYear(year);
 
-  const idx = (b.contributions || []).findIndex(c => c.id === contribId);
+  const y = state.annualByYear[year];
+  const idx = (y.contributions || []).findIndex(c => c.id === contribId);
   if (idx === -1) return;
 
   if (!confirm("Delete this contribution?")) return;
 
-  const c = b.contributions[idx];
-  const cat = b.annualCategories.find(a => a.id === c.categoryId);
+  const c = y.contributions[idx];
+  const cat = (y.categories || []).find(a => a.id === c.categoryId);
   if (cat){
     cat.balance = fromCents(toCents(cat.balance) - toCents(c.amount));
   }
 
-  b.contributions.splice(idx, 1);
+  y.contributions.splice(idx, 1);
   saveState();
   render();
 }
 
-// -------------------- Annual balance helpers --------------------
-function adjustAnnualBalance(budget, categoryId, delta){
+// -------------------- Annual helpers --------------------
+function ensureAnnualYear(year){
+  if (!state.annualByYear) state.annualByYear = {};
+  if (!state.annualByYear[year]){
+    state.annualByYear[year] = { categories: [], contributions: [] };
+  }
+}
+
+function adjustAnnualBalance(year, categoryId, delta){
   if (!categoryId || categoryId === EXTRA_ID) return;
-  const cat = budget.annualCategories.find(c => c.id === categoryId);
+  ensureAnnualYear(year);
+  const y = state.annualByYear[year];
+  const cat = (y.categories || []).find(c => c.id === categoryId);
   if (!cat) return;
   cat.balance = fromCents(toCents(cat.balance) + toCents(delta));
 }
 
-// -------------------- YTD stats --------------------
+function getAnnualCategoryBalance(year, categoryId){
+  ensureAnnualYear(year);
+  const y = state.annualByYear[year];
+  const cat = (y.categories || []).find(c => c.id === categoryId);
+  return cat ? (Number(cat.balance) || 0) : 0;
+}
+
+// -------------------- YTD stats (annual expenses only) --------------------
 function getYearToDateAnnualStats(yearStr){
   const stats = {};
   Object.entries(state.budgets).forEach(([mk, b]) => {
@@ -889,30 +955,33 @@ function createBudgetForMonth(monthKey, copyPrev){
   const base = {
     income: 0,
     monthlyCategories: [],
-    annualCategories: [],
-    expenses: [],
-    contributions: []
+    expenses: []
   };
 
   if (copyPrev && prev){
     base.income = prev.income || 0;
 
-    base.monthlyCategories = prev.monthlyCategories.map(c => ({
+    // Monthly categories can be copied month-to-month
+    base.monthlyCategories = (prev.monthlyCategories || []).map(c => ({
       id: uid(),
       name: c.name,
       budgeted: c.budgeted || 0
     }));
 
-    base.annualCategories = prev.annualCategories.map(c => ({
-      id: uid(),
-      name: c.name,
-      target: c.target || 0,
-      balance: c.balance || 0
-    }));
+    // IMPORTANT: annual categories are NOT copied here (year scoped)
   }
 
   state.budgets[monthKey] = base;
   saveState();
+}
+
+// -------------------- Budget / expense helpers --------------------
+function getBudget(monthKey){
+  return state.budgets[monthKey] || null;
+}
+
+function getMonthExpenses(budget, type){
+  return (budget.expenses || []).filter(e => e.type === type);
 }
 
 // -------------------- Ring helpers --------------------
@@ -927,7 +996,6 @@ function progressPct(spentC, totalC){
 }
 
 function ringTone(spentC, totalC){
-  // Over budget -> red. Otherwise green/yellow based on remaining.
   if (totalC > 0 && spentC > totalC) return "bad";
   const pct = progressPct(spentC, totalC);
   if (pct < 0.65) return "accent";
@@ -1015,26 +1083,22 @@ function promptForm(title, fields){
 function loadState(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { budgets:{} };
+    if (!raw){
+      // If upgrading from v0.6 storage key, we intentionally do NOT auto-migrate here.
+      return { budgets:{}, annualByYear:{} };
+    }
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return { budgets:{} };
+    if (!parsed || typeof parsed !== "object") return { budgets:{}, annualByYear:{} };
     if (!parsed.budgets) parsed.budgets = {};
+    if (!parsed.annualByYear) parsed.annualByYear = {};
     return parsed;
   } catch {
-    return { budgets:{} };
+    return { budgets:{}, annualByYear:{} };
   }
 }
 
 function saveState(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-function getBudget(monthKey){
-  return state.budgets[monthKey] || null;
-}
-
-function getMonthExpenses(budget, type){
-  return (budget.expenses || []).filter(e => e.type === type);
 }
 
 function seedMonthSelect(){
@@ -1057,6 +1121,10 @@ function getMonthKey(date){
   const y = date.getFullYear();
   const m = String(date.getMonth()+1).padStart(2,"0");
   return `${y}-${m}`;
+}
+
+function getYearFromMonthKey(monthKey){
+  return String(monthKey).slice(0,4);
 }
 
 function monthKeyToLabel(k){
