@@ -17,7 +17,8 @@
     </div>
 
     <div class="topbar-right">
-      <span class="badge" id="versionBadge">v0.1</span>
+      <!-- Nonchalant version (loads from VERSION.txt) -->
+      <span class="badge badge-subtle" id="versionBadge">…</span>
     </div>
   </header>
 
@@ -81,13 +82,7 @@
             <button class="btn btn-secondary" id="addMonthlyCategoryBtn">+ Add</button>
           </div>
 
-          <div class="table" id="monthlyTable">
-            <!-- populated by JS -->
-          </div>
-
-          <div class="helper">
-            Tip: click a category row to see expenses for that month.
-          </div>
+          <div class="table" id="monthlyTable"></div>
         </section>
 
         <div class="divider"></div>
@@ -98,32 +93,8 @@
             <button class="btn btn-secondary" id="addAnnualCategoryBtn">+ Add</button>
           </div>
 
-          <div class="table" id="annualTable">
-            <!-- populated by JS -->
-          </div>
-
-          <div class="helper">
-            Annual activity does not affect the monthly totals.
-          </div>
+          <div class="table" id="annualTable"></div>
         </section>
-      </div>
-    </section>
-
-    <section class="card hidden" id="categoryDetailCard">
-      <div class="row row-wrap row-gap">
-        <div>
-          <div class="detail-title" id="detailTitle">Category</div>
-          <div class="detail-subtitle" id="detailSubtitle">Month</div>
-        </div>
-        <div class="right-actions">
-          <button class="btn btn-ghost" id="closeDetailBtn">Close</button>
-        </div>
-      </div>
-
-      <div class="divider"></div>
-
-      <div id="detailExpenses" class="list">
-        <!-- expenses list -->
       </div>
     </section>
   </main>
@@ -178,7 +149,7 @@
     </div>
   </div>
 
-  <!-- Simple prompt modal (reuse styles) -->
+  <!-- Prompt Modal -->
   <div class="modal hidden" id="promptModal">
     <div class="modal-backdrop" data-close="true"></div>
     <div class="modal-panel">
@@ -188,9 +159,7 @@
       </div>
 
       <div class="modal-body">
-        <div class="form-grid" id="promptFields">
-          <!-- injected fields -->
-        </div>
+        <div class="form-grid" id="promptFields"></div>
 
         <div class="row right-actions">
           <button class="btn btn-secondary" id="promptCancelBtn">Cancel</button>
