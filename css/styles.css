@@ -46,6 +46,56 @@ body{
   justify-content:space-between;
   gap:12px;
 }
+/* Chevron + subtle expand animation */
+.trow .catcell{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  min-width: 0;
+}
+
+.chev{
+  width: 18px;
+  height: 18px;
+  display:inline-grid;
+  place-items:center;
+  border:1px solid rgba(70,88,110,.35);
+  border-radius: 8px;
+  background: rgba(17,21,27,.10);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  flex: 0 0 auto;
+  transition: transform 140ms ease, opacity 140ms ease;
+  opacity: .75;
+}
+
+.trow:hover .chev{
+  opacity: 1;
+}
+
+.chev.open{
+  transform: rotate(90deg);
+}
+
+/* Expand/collapse animation container */
+.detail-row{
+  overflow: hidden;               /* needed for animation */
+}
+
+.detail-anim{
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: max-height 180ms ease, opacity 180ms ease, transform 180ms ease;
+  will-change: max-height, opacity, transform;
+}
+
+.detail-anim.open{
+  max-height: 1200px;             /* big enough for typical lists */
+  opacity: 1;
+  transform: translateY(0);
+}
 
 .brand{display:flex; align-items:center; gap:12px}
 .logo{
