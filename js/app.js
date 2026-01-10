@@ -1,13 +1,13 @@
 /* SimpleSpend (localStorage prototype)
    - Month-first budgets
-   - Monthly categories: budgeted + expenses (inline expand with chevron + animation)
-   - Annual categories: target + balance + contributions + expenses (inline expand with chevron + animation)
-   - Planned Remaining + Left to Spend
+   - Monthly categories: inline expand with chevron + animation
+   - Annual categories: inline expand with chevron + animation + contributions (deletable)
+   - Totals use cents math (shows negative correctly)
    - Version badge reads VERSION.txt
 */
 
-const APP_FALLBACK_VERSION = "v0.3";
-const STORAGE_KEY = "simplespend_v03";
+const APP_FALLBACK_VERSION = "v0.4";
+const STORAGE_KEY = "simplespend_v04";
 
 const monthSelect = document.getElementById("monthSelect");
 const prevMonthBtn = document.getElementById("prevMonthBtn");
@@ -47,9 +47,8 @@ const closePromptModalBtn = document.getElementById("closePromptModalBtn");
 const promptCancelBtn = document.getElementById("promptCancelBtn");
 const promptOkBtn = document.getElementById("promptOkBtn");
 
-let expanded = { type: null, id: null }; // {type:"monthly"|"annual", id:"..."} inline expand state
+let expanded = { type: null, id: null }; // {type:"monthly"|"annual", id:"..."}
 
-// -------------------- Data Model --------------------
 /*
 state = {
   budgets: {
@@ -57,14 +56,8 @@ state = {
       income: number,
       monthlyCategories: [{id, name, budgeted}],
       annualCategories: [{id, name, target, balance}],
-      expenses: [{
-        id, type: "monthly"|"annual",
-        categoryId,
-        vendor, item, amount, dateISO, note
-      }],
-      contributions: [{
-        id, categoryId, amount, dateISO, note
-      }]
+      expenses: [{ id, type, categoryId, vendor, item, amount, dateISO, note }],
+      contributions: [{ id, categoryId, amount, dateISO, note }]
     }
   }
 }
@@ -80,7 +73,7 @@ setMonth(currentMonthKey);
 wireEvents();
 render();
 
-// -------------------- Version (VERSION.txt) --------------------
+// -------------------- Version --------------------
 async function loadVersionBadge(){
   const badge = document.getElementById("versionBadge");
   if (!badge) return;
@@ -99,13 +92,16 @@ async function loadVersionBadge(){
 function wireEvents(){
   prevMonthBtn.addEventListener("click", () => setMonth(addMonths(currentMonthKey, -1)));
   nextMonthBtn.addEventListener("click", () => setMonth(addMonths(currentMonthKey, +1)));
-
   monthSelect.addEventListener("change", () => setMonth(monthSelect.value));
 
   createMonthBtn.addEventListener("click", () => {
     createBudgetForMonth(currentMonthKey, copyPrevCheckbox.checked);
     render();
   });
+
+  // FIX: income typing (avoid "0.005000")
+  incomeInput.addEventListener("focus", () => incomeInput.select());
+  incomeInput.addEventListener("click", () => incomeInput.select());
 
   incomeInput.addEventListener("input", () => {
     const b = getBudget(currentMonthKey);
@@ -201,20 +197,22 @@ function renderTotalsOnly(){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const monthlyBudgeted = sum(b.monthlyCategories.map(c => c.budgeted));
-  const monthlySpent = sum(getMonthExpenses(b, "monthly").map(x => x.amount));
+  const incomeC = toCents(b.income);
 
-  const planned = (b.income || 0) - monthlyBudgeted; // can go negative (approved)
-  const left = (b.income || 0) - monthlySpent;
+  const monthlyBudgetedC = sumCents(b.monthlyCategories.map(c => toCents(c.budgeted)));
+  const monthlySpentC = sumCents(getMonthExpenses(b, "monthly").map(x => toCents(x.amount)));
 
-  plannedRemainingEl.textContent = fmtMoney(planned);
-  leftToSpendEl.textContent = fmtMoney(left);
+  const plannedC = incomeC - monthlyBudgetedC;     // can go negative
+  const leftC = incomeC - monthlySpentC;           // MUST show negative when overspent
 
-  plannedRemainingEl.className = "stat-value " + (planned < 0 ? "negative" : "positive");
-  leftToSpendEl.className = "stat-value " + (left < 0 ? "negative" : "positive");
+  plannedRemainingEl.textContent = fmtMoney(fromCents(plannedC));
+  leftToSpendEl.textContent = fmtMoney(fromCents(leftC));
+
+  plannedRemainingEl.className = "stat-value " + (plannedC < 0 ? "negative" : "positive");
+  leftToSpendEl.className = "stat-value " + (leftC < 0 ? "negative" : "positive");
 }
 
-// -------------------- Monthly Table (inline expand + chevron + animation) --------------------
+// -------------------- Monthly Table --------------------
 function renderMonthlyTable(){
   const b = getBudget(currentMonthKey);
   const expenses = getMonthExpenses(b, "monthly");
@@ -237,10 +235,11 @@ function renderMonthlyTable(){
   }
 
   b.monthlyCategories.forEach(cat => {
-    const spent = sum(expenses.filter(e => e.categoryId === cat.id).map(e => e.amount));
-    const remaining = (cat.budgeted || 0) - spent;
-    const remClass = remaining < 0 ? "negative" : "positive";
+    const spentC = sumCents(expenses.filter(e => e.categoryId === cat.id).map(e => toCents(e.amount)));
+    const budgetedC = toCents(cat.budgeted);
+    const remainingC = budgetedC - spentC;
 
+    const remClass = remainingC < 0 ? "negative" : "positive";
     const isOpen = expanded.type === "monthly" && expanded.id === cat.id;
 
     html += `
@@ -251,9 +250,9 @@ function renderMonthlyTable(){
             <div>${escapeHtml(cat.name)}</div>
           </div>
         </div>
-        <div class="money">${fmtMoney(cat.budgeted)}</div>
-        <div class="money">${fmtMoney(spent)}</div>
-        <div class="money ${remClass}">${fmtMoney(remaining)}</div>
+        <div class="money">${fmtMoney(fromCents(budgetedC))}</div>
+        <div class="money">${fmtMoney(fromCents(spentC))}</div>
+        <div class="money ${remClass}">${fmtMoney(fromCents(remainingC))}</div>
         <div class="row" style="justify-content:flex-end;">
           <button class="icon-btn" data-edit-monthly="${cat.id}" title="Edit">Edit</button>
           <button class="icon-btn" data-del-monthly="${cat.id}" title="Delete">Del</button>
@@ -265,7 +264,6 @@ function renderMonthlyTable(){
       .filter(e => (e.categoryId || null) === cat.id)
       .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""));
 
-    // Always render the row so animation can work smoothly
     html += `
       <div class="detail-row">
         <div class="detail-anim ${isOpen ? "open" : ""}">
@@ -284,7 +282,6 @@ function renderMonthlyTable(){
 
   monthlyTable.innerHTML = html;
 
-  // Toggle open/close (single expanded state collapses others automatically)
   monthlyTable.querySelectorAll("[data-toggle-category]").forEach(row => {
     row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
@@ -296,7 +293,6 @@ function renderMonthlyTable(){
     });
   });
 
-  // Edit / Delete category
   monthlyTable.querySelectorAll("[data-edit-monthly]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -337,7 +333,6 @@ function renderMonthlyTable(){
     });
   });
 
-  // Expense actions inside expanded detail
   monthlyTable.querySelectorAll("[data-del-exp]").forEach(btn => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); deleteExpense(btn.dataset.delExp); });
   });
@@ -346,14 +341,14 @@ function renderMonthlyTable(){
   });
 }
 
-// -------------------- Annual Table (inline expand + chevron + animation + delete contrib) --------------------
+// -------------------- Annual Table --------------------
 function renderAnnualTable(){
   const b = getBudget(currentMonthKey);
   const year = currentMonthKey.slice(0,4);
   const ytd = getYearToDateAnnualStats(year);
 
   const head = `
-    <div class="thead" style="grid-template-columns: 1.2fr .7fr .7fr .7fr auto;">
+    <div class="thead annual-grid">
       <div>Category</div>
       <div class="money">Target</div>
       <div class="money">YTD Spent</div>
@@ -374,25 +369,28 @@ function renderAnnualTable(){
 
   b.annualCategories.forEach(cat => {
     const stats = ytd[cat.id] || { spent: 0 };
-    const remainingOfTarget = (cat.target || 0) - (stats.spent || 0);
-    const remClass = remainingOfTarget < 0 ? "negative" : "positive";
+    const targetC = toCents(cat.target);
+    const spentYtdC = toCents(stats.spent);
+    const remainingOfTargetC = targetC - spentYtdC;
+    const remClass = remainingOfTargetC < 0 ? "negative" : "positive";
 
+    const balanceC = toCents(cat.balance);
     const isOpen = expanded.type === "annual" && expanded.id === cat.id;
 
     html += `
-      <div class="trow" data-toggle-category="annual:${cat.id}" style="grid-template-columns: 1.2fr .7fr .7fr .7fr auto;">
+      <div class="trow annual-grid" data-toggle-category="annual:${cat.id}">
         <div class="catcell">
           <span class="chev ${isOpen ? "open" : ""}">›</span>
           <div style="min-width:0;">
             <div>${escapeHtml(cat.name)}</div>
             <div class="cell-muted">
-              <span class="small-pill">${fmtMoney(remainingOfTarget)} of target remaining</span>
+              <span class="small-pill">${fmtMoney(fromCents(remainingOfTargetC))} of target remaining</span>
             </div>
           </div>
         </div>
-        <div class="money">${fmtMoney(cat.target)}</div>
-        <div class="money ${remClass}">${fmtMoney(stats.spent)}</div>
-        <div class="money">${fmtMoney(cat.balance)}</div>
+        <div class="money">${fmtMoney(fromCents(targetC))}</div>
+        <div class="money ${remClass}">${fmtMoney(fromCents(spentYtdC))}</div>
+        <div class="money">${fmtMoney(fromCents(balanceC))}</div>
         <div class="row" style="justify-content:flex-end;">
           <button class="icon-btn" data-contrib="${cat.id}" title="Contribute">+ Add</button>
           <button class="icon-btn" data-edit-annual="${cat.id}" title="Edit">Edit</button>
@@ -438,7 +436,6 @@ function renderAnnualTable(){
 
   annualTable.innerHTML = html;
 
-  // Toggle open/close
   annualTable.querySelectorAll("[data-toggle-category]").forEach(row => {
     row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
@@ -450,7 +447,6 @@ function renderAnnualTable(){
     });
   });
 
-  // Contribute
   annualTable.querySelectorAll("[data-contrib]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -474,7 +470,7 @@ function renderAnnualTable(){
         return;
       }
 
-      cat.balance = (cat.balance || 0) + amt;
+      cat.balance = fromCents(toCents(cat.balance) + toCents(amt));
 
       b.contributions.push({
         id: uid(),
@@ -489,7 +485,6 @@ function renderAnnualTable(){
     });
   });
 
-  // Edit annual
   annualTable.querySelectorAll("[data-edit-annual]").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -516,7 +511,6 @@ function renderAnnualTable(){
     });
   });
 
-  // Delete annual
   annualTable.querySelectorAll("[data-del-annual]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -540,7 +534,6 @@ function renderAnnualTable(){
     });
   });
 
-  // Expense actions inside expanded detail
   annualTable.querySelectorAll("[data-del-exp]").forEach(btn => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); deleteExpense(btn.dataset.delExp); });
   });
@@ -548,13 +541,12 @@ function renderAnnualTable(){
     btn.addEventListener("click", (e) => { e.stopPropagation(); editExpense(btn.dataset.editExp); });
   });
 
-  // Contribution delete actions
   annualTable.querySelectorAll("[data-del-contrib]").forEach(btn => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); deleteContribution(btn.dataset.delContrib); });
   });
 }
 
-// -------------------- Inline cards for expanded details --------------------
+// -------------------- Inline cards --------------------
 function inlineExpenseCardHtml(ex){
   const title = `${escapeHtml(ex.vendor || "")}${ex.item ? " • " + escapeHtml(ex.item) : ""}`.trim() || "(No vendor/item)";
   const note = ex.note ? escapeHtml(ex.note) : "";
@@ -624,21 +616,13 @@ function refreshExpenseCategoryDropdown(){
 
   const opts = [];
 
-  // Monthly
   opts.push({ value:"monthly:null", label:"(Monthly) Uncategorized" });
-  b.monthlyCategories.forEach(c => {
-    opts.push({ value:`monthly:${c.id}`, label:`(Monthly) ${c.name}` });
-  });
+  b.monthlyCategories.forEach(c => opts.push({ value:`monthly:${c.id}`, label:`(Monthly) ${c.name}` }));
 
-  // Annual
   opts.push({ value:"annual:null", label:"(Annual) Uncategorized" });
-  b.annualCategories.forEach(c => {
-    opts.push({ value:`annual:${c.id}`, label:`(Annual) ${c.name}` });
-  });
+  b.annualCategories.forEach(c => opts.push({ value:`annual:${c.id}`, label:`(Annual) ${c.name}` }));
 
-  expCategory.innerHTML = opts
-    .map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`)
-    .join("");
+  expCategory.innerHTML = opts.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join("");
 }
 
 function saveExpense({ keepOpen }){
@@ -662,29 +646,15 @@ function saveExpense({ keepOpen }){
   const editingId = expenseModal.dataset.editingId || "";
   const existing = editingId ? b.expenses.find(e => e.id === editingId) : null;
 
-  // If editing, revert annual balance effect first
   if (existing && existing.type === "annual"){
-    adjustAnnualBalance(b, existing.categoryId, +existing.amount); // undo previous expense
+    adjustAnnualBalance(b, existing.categoryId, +existing.amount); // undo previous
   }
 
-  const record = {
-    id: existing ? existing.id : uid(),
-    type,
-    categoryId,
-    vendor,
-    item,
-    amount,
-    dateISO,
-    note
-  };
+  const record = { id: existing ? existing.id : uid(), type, categoryId, vendor, item, amount, dateISO, note };
 
-  if (existing){
-    Object.assign(existing, record);
-  } else {
-    b.expenses.push(record);
-  }
+  if (existing) Object.assign(existing, record);
+  else b.expenses.push(record);
 
-  // Apply annual expense to balance
   if (type === "annual"){
     adjustAnnualBalance(b, categoryId, -amount);
   }
@@ -741,7 +711,7 @@ function editExpense(expId){
   });
 }
 
-// -------------------- Contributions (delete support) --------------------
+// -------------------- Contributions --------------------
 function deleteContribution(contribId){
   const b = getBudget(currentMonthKey);
   if (!b) return;
@@ -753,9 +723,10 @@ function deleteContribution(contribId){
 
   const c = b.contributions[idx];
 
-  // reverse the balance increase
   const cat = b.annualCategories.find(a => a.id === c.categoryId);
-  if (cat) cat.balance = (cat.balance || 0) - (c.amount || 0);
+  if (cat){
+    cat.balance = fromCents(toCents(cat.balance) - toCents(c.amount));
+  }
 
   b.contributions.splice(idx, 1);
   saveState();
@@ -767,7 +738,7 @@ function adjustAnnualBalance(budget, categoryId, delta){
   if (!categoryId) return;
   const cat = budget.annualCategories.find(c => c.id === categoryId);
   if (!cat) return;
-  cat.balance = (cat.balance || 0) + delta; // can go negative
+  cat.balance = fromCents(toCents(cat.balance) + toCents(delta));
 }
 
 // -------------------- Month lifecycle --------------------
@@ -814,7 +785,7 @@ function createBudgetForMonth(monthKey, copyPrev){
 
 // -------------------- Year-to-date stats --------------------
 function getYearToDateAnnualStats(yearStr){
-  const stats = {}; // categoryId -> {spent}
+  const stats = {};
   Object.entries(state.budgets).forEach(([mk, b]) => {
     if (!mk.startsWith(yearStr + "-")) return;
     (b.expenses || []).forEach(ex => {
@@ -831,6 +802,7 @@ function getYearToDateAnnualStats(yearStr){
 function promptForm(title, fields){
   return new Promise((resolve) => {
     promptTitle.textContent = title;
+
     promptFields.innerHTML = fields.map(f => {
       const value = f.value ?? "";
       const inputId = "pf_" + f.key;
@@ -875,15 +847,15 @@ function promptForm(title, fields){
       resolve(out);
     };
 
-    const cancel = () => {
-      cleanup();
-      resolve(null);
-    };
-
     const cleanup = () => {
       closeModal(promptModal);
       promptOkBtn.removeEventListener("click", ok);
       promptCancelBtn.removeEventListener("click", cancel);
+    };
+
+    const cancel = () => {
+      cleanup();
+      resolve(null);
     };
 
     promptOkBtn.addEventListener("click", ok);
@@ -932,13 +904,10 @@ function seedMonthSelect(){
     keys.push(getMonthKey(d));
   }
 
-  const existing = Object.keys(state.budgets);
-  existing.forEach(k => { if (!keys.includes(k)) keys.push(k); });
+  Object.keys(state.budgets).forEach(k => { if (!keys.includes(k)) keys.push(k); });
 
   keys.sort();
-  monthSelect.innerHTML = keys
-    .map(k => `<option value="${k}">${escapeHtml(monthKeyToLabel(k))}</option>`)
-    .join("");
+  monthSelect.innerHTML = keys.map(k => `<option value="${k}">${escapeHtml(monthKeyToLabel(k))}</option>`).join("");
 }
 
 function getMonthKey(date){
@@ -971,8 +940,6 @@ function uid(){
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-function sum(arr){ return arr.reduce((a,b)=>a+(Number(b)||0), 0); }
-
 function parseMoney(v){
   if (v == null) return 0;
   const s = String(v).replace(/[^0-9.\-]/g,"");
@@ -981,14 +948,31 @@ function parseMoney(v){
   return Math.round(n * 100) / 100;
 }
 
+function toCents(n){
+  const val = Number(n);
+  if (!Number.isFinite(val)) return 0;
+  return Math.round(val * 100);
+}
+
+function fromCents(c){
+  return (Number(c) || 0) / 100;
+}
+
+function sumCents(arr){
+  return arr.reduce((a,b)=> a + (Number(b) || 0), 0);
+}
+
 function fmtMoney(n){
-  const val = Number(n)||0;
-  return val.toLocaleString(undefined, { style:"currency", currency:"USD" });
+  // Keep negatives as negatives (no clamping). Also avoids "-0.00" by cents math upstream.
+  const val = Number(n);
+  const safe = Number.isFinite(val) ? val : 0;
+  return safe.toLocaleString(undefined, { style:"currency", currency:"USD" });
 }
 
 function moneyToInput(n){
-  const val = Number(n)||0;
-  return (Math.round(val*100)/100).toFixed(2);
+  const val = Number(n);
+  const safe = Number.isFinite(val) ? val : 0;
+  return (Math.round(safe*100)/100).toFixed(2);
 }
 
 function openModal(el){
@@ -1021,4 +1005,3 @@ function escapeHtml(str){
 function escapeAttr(str){
   return escapeHtml(str).replaceAll("\n"," ");
 }
-
