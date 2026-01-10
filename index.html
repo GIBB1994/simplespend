@@ -62,13 +62,13 @@
 
           <div class="stat">
             <div class="stat-label">Planned Remaining</div>
-            <div class="stat-value" id="plannedRemaining">$0.00</div>
+            <div class="stat-value" id="plannedRemaining">$0</div>
             <div class="stat-hint">Income − Monthly Budgeted</div>
           </div>
 
           <div class="stat">
             <div class="stat-label">Left to Spend</div>
-            <div class="stat-value" id="leftToSpend">$0.00</div>
+            <div class="stat-value" id="leftToSpend">$0</div>
             <div class="stat-hint">Income − Monthly Spent</div>
           </div>
         </div>
@@ -80,7 +80,6 @@
             <h2>Monthly Categories</h2>
             <button class="btn btn-secondary" id="addMonthlyCategoryBtn">+ Add</button>
           </div>
-
           <div class="table" id="monthlyTable"></div>
         </section>
 
@@ -88,11 +87,17 @@
 
         <section class="section">
           <div class="section-head">
-            <h2>Annual Categories</h2>
+            <h2>Annual</h2>
             <button class="btn btn-secondary" id="addAnnualCategoryBtn">+ Add</button>
           </div>
 
-          <div class="table" id="annualTable"></div>
+          <div class="annual-wrap">
+            <div class="annual-banner annual-banner-budget">Annual Budgets</div>
+            <div class="table" id="annualBudgetTable"></div>
+
+            <div class="annual-banner annual-banner-fund" style="margin-top:14px;">Sinking Funds</div>
+            <div class="table" id="sinkingFundTable"></div>
+          </div>
         </section>
       </div>
     </section>
