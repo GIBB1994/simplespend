@@ -903,12 +903,10 @@ function createBudgetForMonth(monthKey, copyPrev){
       budgeted: c.budgeted || 0
     }));
 
-    base.annualCategories = prev.annualCategories.map(c => ({
-      id: uid(),
-      name: c.name,
-      target: c.target || 0,
-      balance: c.balance || 0
-    }));
+     // Annual categories are NOT copied month-to-month.
+     // They persist across the year via YTD aggregation.
+     base.annualCategories = [];
+
   }
 
   state.budgets[monthKey] = base;
