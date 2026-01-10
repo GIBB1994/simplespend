@@ -266,9 +266,7 @@ body{
   cursor:pointer;
   font: inherit;
 }
-.amountline{
-  font-weight: 900;
-}
+.amountline{ font-weight: 900; }
 .amountmode{
   color: var(--muted);
   font-size: 13px;
@@ -282,8 +280,7 @@ body{
   height: 44px;
   border-radius: 999px;
   border: 1px solid rgba(198,208,223,.95);
-  background:
-    conic-gradient(var(--accent) 0deg, rgba(71,84,103,.18) 0deg);
+  background: conic-gradient(var(--accent) 0deg, rgba(71,84,103,.18) 0deg);
   display:grid;
   place-items:center;
   justify-self:end;
