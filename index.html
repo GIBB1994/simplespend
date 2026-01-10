@@ -7,73 +7,167 @@
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
-
-<header class="topbar">
-  <div class="brand">
-    <div class="logo">SS</div>
-    <div>
-      <div class="title">SimpleSpend</div>
-      <div class="subtitle">Manual monthly budgeting</div>
-    </div>
-  </div>
-  <span class="badge" id="versionBadge">v1.0</span>
-</header>
-
-<main class="wrap">
-  <section class="card">
-
-    <div class="row">
-      <button class="btn btn-ghost" id="prevMonth">◀</button>
-      <select id="monthSelect" class="select"></select>
-      <button class="btn btn-ghost" id="nextMonth">▶</button>
-      <div class="spacer"></div>
-      <button class="btn btn-primary" id="addExpenseBtn">+ Expense</button>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">SS</div>
+      <div>
+        <div class="title">SimpleSpend</div>
+        <div class="subtitle">Manual, fast, month-first</div>
+      </div>
     </div>
 
-    <div class="divider"></div>
-
-    <div id="missingMonth" class="hidden">
-      <h2>No budget for this month</h2>
-      <button class="btn btn-primary" id="createMonthBtn">Create Month</button>
+    <div class="topbar-right">
+      <span class="badge badge-subtle" id="versionBadge">…</span>
     </div>
+  </header>
 
-    <div id="budgetView">
-
-      <div class="stats">
-        <div class="stat">
-          <label>Income</label>
-          <input id="incomeInput" class="input" />
+  <main class="wrap">
+    <section class="card">
+      <div class="row row-wrap row-gap">
+        <div class="month-nav">
+          <button class="btn btn-ghost" id="prevMonthBtn" title="Previous month">◀</button>
+          <select id="monthSelect" class="select"></select>
+          <button class="btn btn-ghost" id="nextMonthBtn" title="Next month">▶</button>
         </div>
-        <div class="stat">
-          <label>Planned Remaining</label>
-          <div id="plannedRemaining" class="value">$0.00</div>
-        </div>
-        <div class="stat">
-          <label>Left to Spend</label>
-          <div id="leftToSpend" class="value">$0.00</div>
+
+        <div class="right-actions">
+          <button class="btn btn-primary" id="addExpenseBtn">+ Add Expense</button>
         </div>
       </div>
 
       <div class="divider"></div>
 
-      <section>
-        <h2>Monthly Categories</h2>
-        <button class="btn btn-secondary" id="addMonthlyCategory">+ Add</button>
-        <div id="monthlyTable"></div>
-      </section>
+      <div id="monthMissingState" class="missing-state hidden">
+        <div class="missing-title">No budget found for this month.</div>
+        <div class="missing-subtitle">Create it (optionally copying last month’s categories).</div>
 
-      <div class="divider"></div>
+        <div class="row row-wrap row-gap">
+          <label class="checkbox">
+            <input type="checkbox" id="copyPrevCheckbox" checked />
+            Copy previous month categories + budgeted amounts
+          </label>
 
-      <section>
-        <h2>Annual Categories</h2>
-        <button class="btn btn-secondary" id="addAnnualCategory">+ Add</button>
-        <div id="annualTable"></div>
-      </section>
+          <button class="btn btn-primary" id="createMonthBtn">Create Month Budget</button>
+        </div>
+      </div>
 
+      <div id="monthExistsState" class="hidden">
+        <div class="grid-3">
+          <div class="stat">
+            <div class="stat-label">Income</div>
+            <div class="stat-value">
+              <input id="incomeInput" class="input input-money" inputmode="decimal" placeholder="0.00" />
+            </div>
+          </div>
+
+          <div class="stat">
+            <div class="stat-label">Planned Remaining</div>
+            <div class="stat-value" id="plannedRemaining">$0.00</div>
+            <div class="stat-hint">Income − Monthly Budgeted</div>
+          </div>
+
+          <div class="stat">
+            <div class="stat-label">Left to Spend</div>
+            <div class="stat-value" id="leftToSpend">$0.00</div>
+            <div class="stat-hint">Income − Monthly Spent</div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <section class="section">
+          <div class="section-head">
+            <h2>Monthly Categories</h2>
+            <button class="btn btn-secondary" id="addMonthlyCategoryBtn">+ Add</button>
+          </div>
+
+          <div class="table" id="monthlyTable"></div>
+        </section>
+
+        <div class="divider"></div>
+
+        <section class="section">
+          <div class="section-head">
+            <h2>Annual Categories</h2>
+            <button class="btn btn-secondary" id="addAnnualCategoryBtn">+ Add</button>
+          </div>
+
+          <div class="table" id="annualTable"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <!-- Expense Modal -->
+  <div class="modal hidden" id="expenseModal">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-panel">
+      <div class="modal-head">
+        <div class="modal-title" id="expenseModalTitle">Add Expense</div>
+        <button class="btn btn-ghost" id="closeExpenseModalBtn">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-grid">
+          <label class="field">
+            <span>Vendor</span>
+            <input class="input" id="expVendor" placeholder="Walmart" />
+          </label>
+
+          <label class="field">
+            <span>Item</span>
+            <input class="input" id="expItem" placeholder="Groceries" />
+          </label>
+
+          <label class="field">
+            <span>Amount</span>
+            <input class="input input-money" id="expAmount" inputmode="decimal" placeholder="0.00" />
+          </label>
+
+          <label class="field">
+            <span>Date</span>
+            <input class="input" id="expDate" type="date" />
+          </label>
+
+          <label class="field field-span-2">
+            <span>Category</span>
+            <select class="select" id="expCategory"></select>
+          </label>
+
+          <label class="field field-span-2">
+            <span>Note</span>
+            <input class="input" id="expNote" placeholder="Optional" />
+          </label>
+        </div>
+
+        <div class="row right-actions">
+          <button class="btn btn-secondary" id="saveAndAddAnotherBtn">Save + Add Another</button>
+          <button class="btn btn-primary" id="saveExpenseBtn">Save</button>
+        </div>
+      </div>
     </div>
-  </section>
-</main>
+  </div>
 
-<script src="js/app.js"></script>
+  <!-- Prompt Modal -->
+  <div class="modal hidden" id="promptModal">
+    <div class="modal-backdrop" data-close="true"></div>
+    <div class="modal-panel">
+      <div class="modal-head">
+        <div class="modal-title" id="promptTitle">Title</div>
+        <button class="btn btn-ghost" id="closePromptModalBtn">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-grid" id="promptFields"></div>
+
+        <div class="row right-actions">
+          <button class="btn btn-secondary" id="promptCancelBtn">Cancel</button>
+          <button class="btn btn-primary" id="promptOkBtn">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
 </body>
 </html>
