@@ -1,22 +1,24 @@
+// js/main.js
 import { makeSupabase, initAuthUI } from "./auth.js";
-
-// TODO: change this to your real app init function (existing app.js entry)
-import { initSimpleSpendApp } from "./appEntry.js"; // you'll create this tiny wrapper
+import { initSimpleSpendApp } from "./appEntry.js";
 
 const supabase = makeSupabase();
 
-let appStarted = false;
+let started = false;
 
-await initAuthUI({
+function startOnce(user) {
+  if (started) return;
+  started = true;
+  initSimpleSpendApp({ supabase, user });
+}
+
+initAuthUI({
   supabase,
-  onSignedIn: async (user) => {
-    if (!appStarted) {
-      appStarted = true;
-      await initSimpleSpendApp({ supabase, user });
-    }
+  onSignedIn: (user) => {
+    if (!user) return;
+    startOnce(user);
   },
   onSignedOut: () => {
-    // optional: hide app content or refresh
-    // location.reload();
-  }
+    // App stays blocked; reload on sign-out is handled in auth.js
+  },
 });
