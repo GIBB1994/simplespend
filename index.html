@@ -18,7 +18,22 @@
 
     <div class="topbar-right">
       <span class="badge badge-subtle" id="versionBadge">…</span>
+      
+      <!-- Account bar (shown when signed in) -->
+      <div
+        id="accountBar"
+        class="row"
+        style="gap:10px; align-items:center; display:none;"
+        >
+        <span class="cell-muted" style="white-space:nowrap;">
+          <span id="userEmail"></span>
+        </span>
+        <button class="btn btn-ghost" id="btnSignOut" type="button">
+          Sign Out
+        </button>
+      </div>
     </div>
+
   </header>
 
   <!-- Auth Gate (blocks app until signed in) -->
@@ -41,17 +56,6 @@
 
         <div class="row right-actions" style="margin-top: 10px;">
           <button class="btn btn-primary" id="btnSignIn" type="button">Sign In</button>
-        </div>
-      </div>
-
-      <div id="signedInUI" style="display:none;">
-        <div class="row row-wrap row-gap" style="align-items:center;">
-          <div class="cell-muted">
-            Signed in as <span id="userEmail"></span>
-          </div>
-          <div class="right-actions">
-            <button class="btn btn-ghost" id="btnSignOut" type="button">Sign Out</button>
-          </div>
         </div>
       </div>
 
