@@ -1,24 +1,44 @@
 // js/main.js
 import { makeSupabase, initAuthUI } from "./auth.js";
-import { initSimpleSpendApp } from "./appEntry.js";
 
 const supabase = makeSupabase();
 
-let started = false;
+let appStarted = false;
 
-function startOnce(user) {
-  if (started) return;
-  started = true;
-  initSimpleSpendApp({ supabase, user });
+function showApp() {
+  const gate = document.getElementById("authGate");
+  const appRoot = document.getElementById("appRoot");
+  if (gate) gate.style.display = "none";
+  if (appRoot) appRoot.style.display = "";
+}
+
+function showAuth() {
+  const gate = document.getElementById("authGate");
+  const appRoot = document.getElementById("appRoot");
+  if (appRoot) appRoot.style.display = "none";
+  if (gate) gate.style.display = "";
+}
+
+async function startAppOnce(user) {
+  if (appStarted) return;
+  if (!user) return;
+
+  appStarted = true;
+  showApp();
+
+  // Lazy import so app.js is NOT evaluated until signed in
+  const { initSimpleSpendApp } = await import("./appEntry.js");
+  await initSimpleSpendApp({ supabase, user });
 }
 
 initAuthUI({
   supabase,
   onSignedIn: (user) => {
-    if (!user) return;
-    startOnce(user);
+    showApp();
+    startAppOnce(user);
   },
   onSignedOut: () => {
-    // App stays blocked; reload on sign-out is handled in auth.js
+    showAuth();
+    // appStarted stays true; sign-out reload is acceptable per spec.
   },
 });
