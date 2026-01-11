@@ -16,7 +16,7 @@
 const APP_FALLBACK_VERSION = "v0.8";
 const STORAGE_KEY = "simplespend_v08";
 
-const EXTRA_ID = "__extra__";
+const EXTRA_ID = "extra99";
 const EXTRA_NAME = "Extra";
 
 // -------------------- DOM --------------------
