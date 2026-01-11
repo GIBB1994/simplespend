@@ -13,7 +13,7 @@
   - Contributions support Edit/Delete (initial(auto) is not directly editable)
 */
 
-const APP_FALLBACK_VERSION = "v0.71";
+const APP_FALLBACK_VERSION = "v0.7";
 const STORAGE_KEY = "simplespend_v07";
 
 const EXTRA_ID = "__extra__";
@@ -135,7 +135,7 @@ function wireEvents(){
     render();
   });
 
-  // Add annual item
+  // Add annual item (Annual Budget or Sinking Fund)
   addAnnualCategoryBtn.addEventListener("click", async () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
@@ -173,13 +173,25 @@ function wireEvents(){
 
     // Create/Set initial(auto)
     if (kind === "annual_budget"){
-      upsertInitialAutoContribution({ year, categoryId:id, amount: cat.budgeted || 0, mode:"set" });
+      upsertInitialAutoContribution({
+        year,
+        categoryId: id,
+        amount: cat.budgeted || 0,
+        mode: "set"
+      });
     } else {
-      // If user provided starting balance, set it.
-      if (start && start !== 0){
-        upsertInitialAutoContribution({ year, categoryId:id, amount: start, mode:"set" });
-      }
-      // Also ensure carry-forward / default 0 initial exists without overwriting a start balance
+      // Always create an initial(auto) for this fund in this year.
+      // Use the typed starting balance if non-zero, otherwise seed with 0.
+      const initialAmount = (start != null && start !== 0) ? start : 0;
+
+      upsertInitialAutoContribution({
+        year,
+        categoryId: id,
+        amount: initialAmount,
+        mode: "set"
+      });
+
+      // Ensure carry-forward only adjusts when there is real prior-year activity.
       ensureSinkingFundCarryForward(year, id);
     }
 
@@ -1158,38 +1170,55 @@ function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
 }
 
 /*
-  FIXED:
-  - Creates initial(auto)=0 when brand new (so ledger is stable)
-  - Carries forward when prior-year exists
-  - DOES NOT overwrite a user-provided starting balance (existing initial(auto)) when there's no prior-year activity
+  Sinking-fund carry-forward:
+  - If there is prior-year activity, this year's initial(auto) = prior-year ending balance.
+  - If there is NO prior-year activity and an initial already exists (e.g., typed starting balance),
+    we do NOT overwrite it with 0.
 */
 function ensureSinkingFundCarryForward(year, categoryId){
   const prevYear = String(Number(year) - 1);
   const prevLedger = getYearToDateAnnualLedger(prevYear, categoryId);
 
+  const prevEnd =
+    (Number(prevLedger.contribTotal) || 0) -
+    (Number(prevLedger.spentTotal) || 0);
+
   const prevHadActivity =
     (prevLedger.contributions && prevLedger.contributions.length > 0) ||
     (prevLedger.expenses && prevLedger.expenses.length > 0) ||
-    (Number(prevLedger.contribTotal) !== 0) ||
-    (Number(prevLedger.spentTotal) !== 0);
+    prevEnd !== 0;
 
   // Locate where initial(auto) lives for this year (Jan if exists, else earliest month)
   const janKey = `${year}-01`;
-  const keys = Object.keys(state.budgets).filter(k => k.startsWith(year + "-")).sort();
+  const keys = Object.keys(state.budgets)
+    .filter(k => k.startsWith(year + "-"))
+    .sort();
+
   const targetKey = state.budgets[janKey] ? janKey : (keys[0] || null);
   if (!targetKey || !state.budgets[targetKey]) return;
 
   const tb = state.budgets[targetKey];
   tb.contributions = tb.contributions || [];
 
-  const existingInitial = tb.contributions.find(c => c.categoryId === categoryId && c.kind === "initial");
-  if (existingInitial && !prevHadActivity) return; // keep starting balance (or manual 0) if no prior-year carry
+  const existingInitial = tb.contributions.find(
+    c => c.categoryId === categoryId && c.kind === "initial"
+  );
 
-  const prevEnd = prevHadActivity
-    ? (Number(prevLedger.contribTotal)||0) - (Number(prevLedger.spentTotal)||0)
-    : 0;
+  // If there's already an initial and no prior-year activity, leave it alone
+  // (this preserves the user-entered starting balance).
+  if (existingInitial && !prevHadActivity) {
+    return;
+  }
 
-  upsertInitialAutoContribution({ year, categoryId, amount: prevEnd, mode:"set" });
+  // Otherwise, use prior-year ending balance (or 0 if somehow no activity but no initial existed)
+  const amountToUse = prevHadActivity ? prevEnd : 0;
+
+  upsertInitialAutoContribution({
+    year,
+    categoryId,
+    amount: amountToUse,
+    mode: "set"
+  });
 }
 
 // -------------------- Annual category propagation --------------------
