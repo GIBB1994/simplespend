@@ -18,10 +18,54 @@
 
     <div class="topbar-right">
       <span class="badge badge-subtle" id="versionBadge">…</span>
+      
+      <!-- Account bar (shown when signed in) -->
+      <div
+        id="accountBar"
+        class="row"
+        style="gap:10px; align-items:center; display:none;"
+        >
+        <span class="cell-muted" style="white-space:nowrap;">
+          <span id="userEmail"></span>
+        </span>
+        <button class="btn btn-ghost" id="btnSignOut" type="button">
+          Sign Out
+        </button>
+      </div>
     </div>
+
   </header>
 
-  <main class="wrap">
+  <!-- Auth Gate (blocks app until signed in) -->
+  <div id="authGate" class="wrap" style="margin-top: 12px;">
+    <section class="card">
+      <div id="signedOutUI">
+        <h2 style="margin:0 0 10px 0;">Sign in</h2>
+
+        <div class="form-grid">
+          <label class="field field-span-2">
+            <span>Email</span>
+            <input class="input" id="authEmail" type="email" autocomplete="email" placeholder="you@example.com" />
+          </label>
+
+          <label class="field field-span-2">
+            <span>Password</span>
+            <input class="input" id="authPassword" type="password" autocomplete="current-password" placeholder="••••••••" />
+          </label>
+        </div>
+
+        <div class="row right-actions" style="margin-top: 10px;">
+          <button class="btn btn-primary" id="btnSignIn" type="button">Sign In</button>
+        </div>
+      </div>
+
+      <!-- Single shared error container (unique ID) -->
+      <div id="authError" class="cell-muted" style="margin-top:10px;"></div>
+    </section>
+  </div>
+
+  <!-- App Root -->
+  <main class="wrap" id="appRoot" style="display:none;">
     <section class="card">
       <div class="row row-wrap row-gap">
         <div class="month-nav">
@@ -173,6 +217,49 @@
     </div>
   </div>
 
-  <script src="js/app.js"></script>
+  <!-- Config loader: try local config.js first; fallback to committed config.public.js -->
+  <script>
+    (function () {
+      function loadScript(src) {
+        return new Promise(function (resolve, reject) {
+          var s = document.createElement("script");
+          s.src = src;
+          s.onload = resolve;
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
+
+      loadScript("./js/config.js")
+        .catch(function () {
+          return loadScript("./js/config.public.js");
+        })
+        .then(function () {
+          // Boot app entry (auth-gated)
+          var m = document.createElement("script");
+          m.type = "module";
+          m.src = "./js/main.js";
+          document.body.appendChild(m);
+        })
+        .catch(function (err) {
+          console.error("Failed to load config scripts:", err);
+
+          var appRoot = document.getElementById("appRoot");
+          if (appRoot) appRoot.style.display = "none";
+
+          var gate = document.getElementById("authGate");
+          if (gate) gate.style.display = "block";
+
+          var so = document.getElementById("signedOutUI");
+          if (so) so.classList.remove("hidden");
+
+          var si = document.getElementById("signedInUI");
+          if (si) si.classList.add("hidden");
+
+          var ae = document.getElementById("authError");
+          if (ae) ae.textContent = "Config failed to load. Ensure js/config.js (dev) or js/config.public.js (prod) exists.";
+        });
+    })();
+  </script>
 </body>
 </html>
