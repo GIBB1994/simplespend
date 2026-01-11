@@ -1170,7 +1170,8 @@ function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
   });
 }
 
-function ensureSinkingFundCarryForward(year, categoryId){
+/*
+  function ensureSinkingFundCarryForward(year, categoryId){
   const prevYear = String(Number(year) - 1);
 
   // Prior year ending balance:
@@ -1182,6 +1183,27 @@ function ensureSinkingFundCarryForward(year, categoryId){
   // If prev year doesn't exist yet, this becomes 0.
   upsertInitialAutoContribution({ year, categoryId, amount: prevEnd, mode:"set" });
 }
+*/
+function ensureSinkingFundCarryForward(year, categoryId){
+  const prevYear = String(Number(year) - 1);
+
+  // Did this category have ANY activity last year?
+  const prevLedger = getYearToDateAnnualLedger(prevYear, categoryId);
+  const prevHadActivity =
+    (prevLedger.contributions && prevLedger.contributions.length > 0) ||
+    (prevLedger.expenses && prevLedger.expenses.length > 0) ||
+    (Number(prevLedger.contribTotal) !== 0) ||
+    (Number(prevLedger.spentTotal) !== 0);
+
+  // If it didn't exist / no activity last year, do NOT overwrite current year's initial.
+  if (!prevHadActivity) return;
+
+  const prevEnd = (Number(prevLedger.contribTotal)||0) - (Number(prevLedger.spentTotal)||0);
+
+  // OK to carry-forward now
+  upsertInitialAutoContribution({ year, categoryId, amount: prevEnd, mode:"set" });
+}
+
 
 // -------------------- Annual category propagation --------------------
 function propagateAnnualCategoryToYear(year, cat){
