@@ -1,4 +1,4 @@
-const CACHE_NAME = "simplespend-v0.84";
+const CACHE_NAME = "simplespend-v0.9";
 
 const FILES = [
   "./",
