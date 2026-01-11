@@ -35,13 +35,13 @@ export function initAuthUI({ supabase, onSignedIn, onSignedOut }) {
   }
 
   function showSignedOut() {
-    if (elSignedOut) elSignedOut.style.display = "";
-    if (elSignedIn) elSignedIn.style.display = "none";
+    if (elSignedOut) elSignedOut.classList.remove("hidden");
+    if (elSignedIn) elSignedIn.classList.add("hidden");
   }
 
   function showSignedIn(email) {
-    if (elSignedOut) elSignedOut.style.display = "none";
-    if (elSignedIn) elSignedIn.style.display = "";
+    if (elSignedOut) elSignedOut.classList.add("hidden");
+    if (elSignedIn) elSignedIn.classList.remove("hidden");
     if (elUserEmail) elUserEmail.textContent = email || "";
   }
 
@@ -55,9 +55,7 @@ export function initAuthUI({ supabase, onSignedIn, onSignedOut }) {
       return;
     }
 
-    const session = data?.session;
-    const user = session?.user;
-
+    const user = data?.session?.user;
     if (user) {
       showSignedIn(user.email);
       onSignedIn?.(user);
@@ -99,14 +97,14 @@ export function initAuthUI({ supabase, onSignedIn, onSignedOut }) {
     setError("");
     try {
       await supabase.auth.signOut();
-      // You said reload is acceptable; it also guarantees app resets cleanly.
+      // You said reload is acceptable; guarantees app resets cleanly.
       location.reload();
     } catch (err) {
       setError(err?.message || String(err));
     }
   });
 
-  // React to auth changes (sign-in, refresh token, sign-out)
+  // React to auth changes
   supabase.auth.onAuthStateChange((_event, session) => {
     const user = session?.user;
     if (user) {
@@ -118,6 +116,6 @@ export function initAuthUI({ supabase, onSignedIn, onSignedOut }) {
     }
   });
 
-  // Initial UI sync
+  // Initial UI sync (covers refresh/session persistence)
   refreshUIFromSession();
 }
