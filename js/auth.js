@@ -1,80 +1,123 @@
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
-
-function getConfig() {
-  const cfg = window.SS_CONFIG;
-  if (!cfg?.SUPABASE_URL || !cfg?.SUPABASE_ANON_KEY) {
-    throw new Error("Missing SS_CONFIG. Provide js/config.js (dev) or js/config.public.js (prod).");
-  }
-  return cfg;
-}
+// js/auth.js
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 export function makeSupabase() {
-  const cfg = getConfig();
-  return createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
-}
+  const cfg = window.SS_CONFIG || {};
+  const url = cfg.SUPABASE_URL;
+  const key = cfg.SUPABASE_ANON_KEY;
 
-export async function initAuthUI({ supabase, onSignedIn, onSignedOut }) {
-  const authGate = document.getElementById("authGate");
-  const signedOutUI = document.getElementById("signedOutUI");
-  const signedInUI = document.getElementById("signedInUI");
-  const userEmailEl = document.getElementById("userEmail");
-  const authError = document.getElementById("authError");
-
-  const emailEl = document.getElementById("authEmail");
-  const passEl = document.getElementById("authPassword");
-  const btnSignIn = document.getElementById("btnSignIn");
-  const btnSignOut = document.getElementById("btnSignOut");
-
-  function showError(msg) {
-    authError.textContent = msg || "";
+  if (!url || !key) {
+    throw new Error("SS_CONFIG missing SUPABASE_URL / SUPABASE_ANON_KEY");
   }
 
-  async function refresh() {
+  return createClient(url, key, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  });
+}
+
+export function initAuthUI({ supabase, onSignedIn, onSignedOut }) {
+  const elSignedOut = document.getElementById("signedOutUI");
+  const elSignedIn = document.getElementById("signedInUI");
+  const elEmail = document.getElementById("authEmail");
+  const elPass = document.getElementById("authPassword");
+  const btnIn = document.getElementById("btnSignIn");
+  const btnOut = document.getElementById("btnSignOut");
+  const elUserEmail = document.getElementById("userEmail");
+  const elErr = document.getElementById("authError");
+
+  function setError(msg) {
+    if (!elErr) return;
+    elErr.textContent = msg || "";
+  }
+
+  function showSignedOut() {
+    if (elSignedOut) elSignedOut.style.display = "";
+    if (elSignedIn) elSignedIn.style.display = "none";
+  }
+
+  function showSignedIn(email) {
+    if (elSignedOut) elSignedOut.style.display = "none";
+    if (elSignedIn) elSignedIn.style.display = "";
+    if (elUserEmail) elUserEmail.textContent = email || "";
+  }
+
+  async function refreshUIFromSession() {
+    setError("");
     const { data, error } = await supabase.auth.getSession();
-    if (error) showError(error.message);
+    if (error) {
+      showSignedOut();
+      setError(error.message);
+      onSignedOut?.();
+      return;
+    }
 
     const session = data?.session;
-    if (session?.user) {
-      signedOutUI.style.display = "none";
-      signedInUI.style.display = "block";
-      userEmailEl.textContent = session.user.email || session.user.id;
-      showError("");
-      onSignedIn?.(session.user);
+    const user = session?.user;
+
+    if (user) {
+      showSignedIn(user.email);
+      onSignedIn?.(user);
     } else {
-      signedInUI.style.display = "none";
-      signedOutUI.style.display = "block";
-      userEmailEl.textContent = "";
+      showSignedOut();
       onSignedOut?.();
     }
   }
 
-  btnSignIn.onclick = async () => {
-    showError("");
-    const email = (emailEl.value || "").trim();
-    const password = passEl.value || "";
-    if (!email || !password) return showError("Email + password required.");
+  // Sign in handler
+  btnIn?.addEventListener("click", async () => {
+    setError("");
+    const email = (elEmail?.value || "").trim();
+    const password = elPass?.value || "";
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return showError(error.message);
-    await refresh();
-  };
+    if (!email || !password) {
+      setError("Email and password are required.");
+      return;
+    }
 
-  btnSignOut.onclick = async () => {
-    showError("");
-    const { error } = await supabase.auth.signOut();
-    if (error) return showError(error.message);
-    await refresh();
-  };
+    btnIn.disabled = true;
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
 
-  supabase.auth.onAuthStateChange(() => {
-    refresh();
+      const user = data?.user;
+      showSignedIn(user?.email);
+      onSignedIn?.(user);
+    } catch (err) {
+      showSignedOut();
+      setError(err?.message || String(err));
+    } finally {
+      btnIn.disabled = false;
+    }
   });
 
-  await refresh();
+  // Sign out handler
+  btnOut?.addEventListener("click", async () => {
+    setError("");
+    try {
+      await supabase.auth.signOut();
+      // You said reload is acceptable; it also guarantees app resets cleanly.
+      location.reload();
+    } catch (err) {
+      setError(err?.message || String(err));
+    }
+  });
 
-  // If config missing, show it clearly instead of silent fail
-  if (!window.SS_CONFIG) {
-    authGate.style.borderColor = "#b00020";
-    showError("Missing SS_CONFIG. Create js/config.js (dev) or js/config.public.js (prod).");
-  }
+  // React to auth changes (sign-in, refresh token, sign-out)
+  supabase.auth.onAuthStateChange((_event, session) => {
+    const user = session?.user;
+    if (user) {
+      showSignedIn(user.email);
+      onSignedIn?.(user);
+    } else {
+      showSignedOut();
+      onSignedOut?.();
+    }
+  });
+
+  // Initial UI sync
+  refreshUIFromSession();
 }
