@@ -1,10 +1,9 @@
 # SimpleSpend
 
-SimpleSpend is a manual, month-first budgeting app inspired by EveryDollar.
+SimpleSpend is a **manual, month-first** budgeting app inspired by EveryDollar.
 It prioritizes **clarity, speed, and control** over automation.
 
-This README defines the **non-negotiable behavior, architecture, and direction**
-of the project. Treat it as the source of truth.
+This README is the **source of truth** for behavior + direction. If code disagrees with this, **the code is wrong**.
 
 ---
 
@@ -29,12 +28,9 @@ of the project. Treat it as the source of truth.
 - **App repo:** `app-simplespend`  
   Standalone repository.
 
-- **Frontend:** Static site (GitHub Pages)
-
-- **Backend:** Supabase (Postgres + RLS)
-
-- **Auth:** Supabase Auth (real auth, not a pin or local-only lock)
-
+- **Frontend:** Static site (GitHub Pages / PWA)
+- **Backend (future):** Supabase (Postgres + RLS)
+- **Auth (future):** Supabase Auth (real auth, not a pin/local-only lock)
 - **Monorepo:** ❌ Not used
 
 ---
@@ -43,7 +39,7 @@ of the project. Treat it as the source of truth.
 
 ### Phase 1
 - Single-user experience
-- Multi-device sync
+- Multi-device sync (future)
 - Schema must be **multi-user ready**
 
 ### Phase 2
@@ -52,57 +48,62 @@ of the project. Treat it as the source of truth.
 
 ---
 
-## Month Model (Locked)
+## Core Model (Locked)
 
-- Budgets are viewed by **month/year** (e.g. *January 2026*).
-- Easy navigation:
-  - Dropdown selector
+### Month Model
+- Budgets are keyed by month as `YYYY-MM` (e.g. `2026-01`).
+- Navigation:
+  - Month dropdown
   - Previous / next month buttons
-- Creating a month can optionally:
-  - Copy **monthly categories + budgeted amounts** from the previous month
-- Monthly budgets are independent objects keyed as `YYYY-MM`.
+- Month creation can optionally:
+  - Copy **monthly categories + budgeted amounts** from previous month
+- Monthly budgets are independent objects.
 
----
+### Income & Totals (Monthly)
+- Each month has **one income number**.
 
-## Income & Totals (Locked)
-
-- Each month has **one total income number**.
-
-### Calculations
-- **Planned Remaining**  
-  `Income − sum(Monthly Budgeted)`  
-  - Can go **negative**
-- **Left to Spend**  
-  `Income − Monthly Spent`  
-  - Can go **negative**
-  - Negative values must display **in red**
+Calculations:
+- **Planned Remaining** = `Income − sum(Monthly Budgeted)`  
+  - Can be negative (display negative in **red**)
+- **Left to Spend** = `Income − sum(Monthly Spent)`  
+  - Can be negative (display negative in **red**)
 
 ---
 
 ## Monthly Categories (Locked)
 
-- User can:
-  - Add / remove categories
-  - Set name and budgeted amount
-- Monthly categories:
-  - Affect Planned Remaining
-  - Affect Left to Spend
+User can:
+- Add / remove categories
+- Set name + budgeted amount
+
+Monthly categories affect:
+- Planned Remaining
+- Left to Spend
 
 ### Category List UI (Locked Direction)
-- Show:
-  - Category name
-  - **Left / Total** (default)
-  - Progress indicator (ring/pie)
-- Tap Left/Total to toggle:
+Each category row shows:
+- Category name
+- **Left / Total** (default)
+- Progress ring indicator
+
+Toggle:
+- Tap the amount area to toggle:
+  - **Left / Total**
   - **Spent / Total**
-- Edit / delete actions must **not clutter the main list**
-  - Actions live inside expanded detail or a dedicated edit mode
+
+No clutter:
+- Edit/delete must not clutter rows  
+  Actions live in expanded detail.
+
+### Money Display Rules
+- Category rollups should show **no cents** (e.g. `$50`, `-$50`)
+- Expense line-items can show cents.
 
 ---
 
 ## Expenses (Locked)
 
-### Required Fields
+Required fields:
 - Vendor
 - Item (short label)
 - Amount
@@ -110,96 +111,180 @@ of the project. Treat it as the source of truth.
 - Category
 - Note (optional)
 
-### Behavior
+Behavior:
 - Expenses must have a **valid category**
-- Clicking a category shows expenses **inline under that category**
-- Expenses are month-scoped
+- Clicking a category expands and shows expenses **inline under that category**
+- Expenses are scoped to:
+  - the month (monthly categories)
+  - or the annual subsystem rules below (annual budgets)
 
 ---
 
 ## Extra Bucket (Hidden Uncategorized) — Non-Negotiable
 
-- Special hidden category:
-  - ID: `__extra__`
-  - Name: `Extra`
-- Rules:
-  - ❌ Never selectable in Add Expense
-  - Appears **only if it contains expenses**
-  - When a category is deleted:
-    - Existing expenses move to **Extra**
-  - Auto-hides when empty
-- Purpose:
-  - No expenses ever “disappear”
-  - Forces cleanup without data loss
+Special hidden category:
+- ID: `__extra__`
+- Name: `Extra`
+
+Rules:
+- ❌ Never selectable in Add Expense
+- ✅ Appears **only when it has expenses**
+- Deleting a category:
+  - existing expenses move to **Extra**
+- ✅ Auto-hides when empty
+
+Purpose:
+- Nothing ever “disappears”
+- Forces cleanup without data loss
 
 ---
 
-## Annual Categories & Sinking Funds (Merged Concept, Locked)
+## Annual System (Locked Decision)
 
-Annual budgets and sinking funds are treated as **one unified concept**.
+Annual behavior was clarified and split into **two types** that share the same mechanics but differ in scope and UI.
 
-### Core Rule
-- Contributions can be added **from thin air**
-  - They do **not** reduce monthly income
-  - The app does not require recording them as income
-  - Users may optionally make a “double move” manually
+### Annual Types
 
-### Annual Category Properties
-- Name
-- **Target** (original planned amount)
-- **Balance** (running fund balance)
-- Contributions list (add to balance)
-- Expenses list (subtract from balance)
+#### 1) Annual Budget (Year-scoped, resets yearly)
+Use when:
+- You want a yearly budget that does **not** roll over into next year.
 
-### Cross-Month Behavior (Locked)
-- Annual category rows show **Year-To-Date totals**
-- Expanded view shows **this month only**
-- Switching months must not lose annual totals
+Scope:
+- Ledger is per-year (e.g. 2026 only)
+- Annual expenses/contributions do **not** roll from `Dec 2026 → Jan 2027`
+
+Copy behavior:
+- New year should **recreate** the annual budget items by copying:
+  - Name
+  - Target
+  - Initial
+- New year does **not** copy:
+  - Expenses
+  - Contributions
+
+Row UI:
+- Show **Target directly underneath the category name** (no drill-down needed)
+- Row amount display:
+  - **Left / TotalAvailable**
+  - no cents
+
+**Annual Budget Math (authoritative):**
+- Target = expected yearly budget (static; does not change)
+- Initial = starting amount available for that year
+- Contributions = “small wins” added without changing Target
+- Spent = sum of annual-budget expenses within that year
+
+Formulas:
+- **TotalAvailable** = `Target + Initial + sum(Contributions)`
+- **Left** = `TotalAvailable − Spent`
+
+Ring behavior:
+- Ring should be **full when healthy** and **drain as remaining decreases**
+- Progress basis for annual budgets:
+  - `Left / TotalAvailable` (clamped 0..1)
+
+Expanded detail:
+- Show **all annual budget expenses for the year (YTD)** (not just the month)
+- Show **all annual budget contributions for the year (YTD)**
+- Contributions must support **Edit** and **Delete**
+- Expenses must support **Edit** and **Delete**
+- Negative money shows as `-$50` (not parentheses)
+
+#### 2) Sinking Fund (All-time rollover)
+Use when:
+- You want a fund that carries over across years.
+
+Scope:
+- Ledger is all-time (global)
+- Continues across year boundaries
+
+Row UI:
+- Row shows **Balance only** (no cents)
+- Target shown under the name as “Goal”
+
+**Sinking Fund Math (authoritative):**
+- Target = goal (static)
+- Initial = starting fund amount
+- Contributions = added to fund
+- Spent = fund expenses (all-time)
+
+Formulas:
+- **Funded** = `Initial + sum(Contributions)`
+- **Balance** = `Funded − Spent`
+
+Expanded detail:
+- Show **all contributions all-time**
+- Show **all expenses all-time**
+- Contributions must support **Edit** and **Delete**
+- Expenses must support **Edit** and **Delete**
+- Negative money shows as `-$50`
+
+> NOTE: Annual Budgets and Sinking Funds share the same “ledger idea” but differ in whether they reset yearly.
 
 ### Critical Rule (Hard Non-Negotiable)
-- **Creating an annual category must NOT create a monthly category**
+- **Creating an annual category must NOT create a monthly category.**
+- Monthly categories are created only via “Add Monthly Category”.
 
 ---
 
 ## UI / UX Rules (Locked)
 
 - Medium theme (not dark)
-- Larger, readable font sizes
-- Responsive:
-  - No overlapping tables on mobile
-- No instructional clutter (“click here” tips)
-- Column alignment must be stable (headers and rows share grid)
+- Larger readable font
+- Responsive (no overlapping on mobile)
+- No instructional clutter (“tap to show spent” style microcopy should be removed)
+- Stable column alignment: headers and rows must share the same grid layout
 
 ---
 
 ## Versioning (Locked)
 
-- Version displayed subtly in UI
+- Version shown subtly in UI
 - Read from `VERSION.txt`
-- Fallback version supported
+- Fallback version supported in JS
 
 ---
 
-## Backend & Security Direction (Locked)
+## PWA / Service Worker (Locked Direction)
+
+Goal:
+- Avoid “stale deployments” from cached JS/CSS.
+
+Requirements:
+- Service worker cache must include:
+  - `./index.html`
+  - `./css/styles.css`
+  - `./js/app.js`
+  - `./manifest.json`
+  - icons
+  - `./VERSION.txt`
+- Bumping `CACHE_NAME` should trigger refresh.
+- Recommended strategy:
+  - **Network-first** for HTML (so deployments show quickly)
+  - **Cache-first** for static assets (fast loads)
+
+---
+
+## Backend & Security Direction (Future, Locked)
 
 - Data persisted in Supabase (no long-term reliance on localStorage)
 - Budgets scoped by `budget_id`
 
-### Security
+Security:
 - Supabase **Row Level Security is mandatory**
 - All access scoped by:
-  - User membership to `budget_id`
+  - user membership to `budget_id`
 - Even in Phase 1, schema must support future sharing
 
 ---
 
 ## Reporting (Required, Future Phase)
 
-- Reporting page is required
-- Must support:
-  - Annual rollups
-  - Spending trends
-- All expenses are retained for reporting
+Reporting page is required.
+Must support:
+- Annual rollups
+- Spending trends
+- All expenses retained for reporting
 
 ---
 
@@ -211,20 +296,30 @@ Annual budgets and sinking funds are treated as **one unified concept**.
    - Never selectable
    - Shows only when populated
    - Receives expenses on category delete
-4. Annual categories:
-   - Do not create monthly categories
-   - Show YTD totals across months
-   - Expanded view shows current month only
+   - Auto-hides when empty
+4. Annual system:
+   - Creating annual does NOT create monthly
+   - Annual Budget is **year-scoped** (no rollover)
+   - Annual Budget totals are **YTD**, month switching does not reset
+   - Sinking Funds **roll over all-time**
+   - Contributions are editable
+   - Category rows show Target underneath without drilling in
 5. Month switching never loses data
 6. Buttons and modals continue to work
+7. Money formatting:
+   - Category rollups show **no cents**
+   - Negatives show as `-$50` (not parentheses)
 
 ---
 
-## Status
+## Status / Next Steps
 
-- Budget logic is nearly complete
-- Next steps:
-  1. Version bump
-  2. Supabase Auth
-  3. Database schema + RLS
-  4. Reporting page
+Current:
+- Frontend logic v0.7 baseline
+- Annual Budgets + Sinking Funds structure agreed
+
+Next steps:
+1. Version bump discipline + SW cache discipline
+2. Supabase Auth
+3. Database schema + RLS (multi-user ready)
+4. Reporting page
