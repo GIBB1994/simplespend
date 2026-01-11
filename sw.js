@@ -1,58 +1,50 @@
+// sw.js — SimpleSpend v0.7
 const CACHE_NAME = "simplespend-v0.7";
+
 const FILES = [
   "./",
   "./index.html",
+  "./manifest.json",
+  "./VERSION.txt",
   "./css/styles.css",
   "./js/app.js",
-  "./manifest.json",
   "./assets/icon-192.png",
-  "./assets/icon-512.png",
-  "./VERSION.txt"
+  "./assets/icon-512.png"
 ];
 
-self.addEventListener("install", (e) => {
-  e.waitUntil(
+self.addEventListener("install", (event) => {
+  event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(FILES))
   );
   self.skipWaiting();
 });
 
-self.addEventListener("activate", (e) => {
-  e.waitUntil(
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.map((k) => (k !== CACHE_NAME ? caches.delete(k) : null)))
+      Promise.all(keys.map((k) => (k === CACHE_NAME ? null : caches.delete(k))))
     )
   );
   self.clients.claim();
 });
 
-self.addEventListener("fetch", (e) => {
-  const req = e.request;
-  if (req.method !== "GET") return;
-
-  // Network-first for HTML so new deployments show up ASAP
-  if (req.mode === "navigate" || req.headers.get("accept")?.includes("text/html")) {
-    e.respondWith(
-      fetch(req)
-        .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE_NAME).then((c) => c.put(req, copy));
-          return res;
-        })
-        .catch(() => caches.match(req).then((r) => r || caches.match("./index.html")))
-    );
-    return;
-  }
-
-  // Cache-first for static assets
-  e.respondWith(
-    caches.match(req).then((cached) => {
+self.addEventListener("fetch", (event) => {
+  event.respondWith(
+    caches.match(event.request).then((cached) => {
       if (cached) return cached;
-      return fetch(req).then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE_NAME).then((c) => c.put(req, copy));
-        return res;
-      });
+      return fetch(event.request)
+        .then((resp) => {
+          // Cache same-origin GET requests for offline use
+          if (
+            event.request.method === "GET" &&
+            new URL(event.request.url).origin === self.location.origin
+          ) {
+            const copy = resp.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          }
+          return resp;
+        })
+        .catch(() => cached); // best-effort fallback
     })
   );
 });
