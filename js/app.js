@@ -63,17 +63,30 @@ let expanded = { type: null, id: null }; // "monthly" | "annual_budget" | "sinki
 let amountMode = "left"; // "left" or "spent" (global toggle; not used for sinking funds)
 
 // -------------------- State --------------------
-let state = loadState();
-migrateLegacyStateIfNeeded();
+let state = null;
+let currentMonthKey = null;
+let _booted = false;
 
-let currentMonthKey = getMonthKey(new Date());
+// -------------------- Init (auth-gated) --------------------
+export async function initApp({ supabase, user }) {
+  if (_booted) return;
+  _booted = true;
 
-// -------------------- Init --------------------
-loadVersionBadge();
-seedMonthSelect();
-setMonth(currentMonthKey);
-wireEvents();
-render();
+  console.log("Signed in:", user?.email);
+
+  // set up state only now
+  state = loadState();
+  migrateLegacyStateIfNeeded();
+
+  currentMonthKey = getMonthKey(new Date());
+
+  loadVersionBadge();
+  seedMonthSelect();
+  setMonth(currentMonthKey);
+  wireEvents();
+  render();
+}
+
 
 // -------------------- Version --------------------
 async function loadVersionBadge(){
