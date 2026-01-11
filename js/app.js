@@ -10,7 +10,7 @@
   - Contributions support Edit/Delete (initial(auto) is not directly editable).
 */
 
-const APP_FALLBACK_VERSION = "v0.7";
+const APP_FALLBACK_VERSION = "v0.71";
 const STORAGE_KEY = "simplespend_v07";
 
 const EXTRA_ID = "__extra__";
