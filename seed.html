@@ -1,25 +1,28 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>SimpleSpend Seed</title>
-<style>
-  body{font-family:system-ui;padding:16px;max-width:900px;margin:0 auto}
-  input,button{font-size:16px;padding:10px;margin:6px 0;width:100%;box-sizing:border-box}
-  pre{background:#f4f4f4;padding:12px;overflow:auto}
-  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .card{border:1px solid #ddd;padding:12px;border-radius:10px;margin:12px 0}
-</style>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SimpleSpend Seed</title>
+  <style>
+    body { font-family: system-ui; padding: 16px; max-width: 900px; margin: 0 auto; }
+    input, button { font-size: 16px; padding: 10px; margin: 6px 0; width: 100%; }
+    pre { background: #f4f4f4; padding: 12px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card { border: 1px solid #ddd; padding: 12px; border-radius: 10px; margin: 12px 0; }
+  </style>
 </head>
 <body>
+
 <h1>Seed + RLS Test</h1>
 
 <script src="./js/config.js"></script>
 
 <div class="card">
-  <h2>Sign In</h2>
+  <h2>Auth</h2>
   <div class="row">
-    <div><input id="email" placeholder="email"/></div>
-    <div><input id="password" type="password" placeholder="password"/></div>
+    <input id="email" placeholder="email" />
+    <input id="password" type="password" placeholder="password" />
   </div>
   <button id="signIn">Sign In</button>
   <button id="signOut">Sign Out</button>
@@ -35,127 +38,158 @@
 <div class="card">
   <h2>Tests</h2>
   <button id="listBudgets">List Budgets</button>
-  <button id="checkExtra">Check extra99 exists</button>
-  <button id="catDelete">Create+Delete category → move expense to extra99</button>
-  <button id="delMonth">Delete month 2026-01</button>
+  <button id="checkExtra">Check extra99</button>
+  <button id="catDelete">Delete category → move expense</button>
+  <button id="delMonth">Delete month</button>
   <pre id="testOut"></pre>
 </div>
 
 <script type="module">
-  import { getSupabase } from "./js/supabaseClient.js";
-  const supabase = getSupabase();
+  import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+  const supabase = createClient(
+    window.SS_CONFIG.SUPABASE_URL,
+    window.SS_CONFIG.SUPABASE_ANON_KEY
+  );
+
   const authOut = document.getElementById("authOut");
   const seedOut = document.getElementById("seedOut");
   const testOut = document.getElementById("testOut");
-  const log = (el, x) => el.textContent = typeof x === "string" ? x : JSON.stringify(x,null,2);
+
+  const log = (el, x) => el.textContent = typeof x === "string" ? x : JSON.stringify(x, null, 2);
 
   let budgetId = null;
 
-  async function refreshAuth(){
+  async function refreshAuth() {
     const { data } = await supabase.auth.getSession();
-    log(authOut, data?.session ? { email: data.session.user.email, id: data.session.user.id } : "Not signed in");
+    log(authOut, data?.session ? data.session.user.email : "Not signed in");
   }
 
   document.getElementById("signIn").onclick = async () => {
-    const email = document.getElementById("email").value.trim();
-    const password = document.getElementById("password").value;
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return log(authOut, error);
-    await refreshAuth();
-  };
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) return log(authOut, error);
+
+  await refreshAuth();
+};
+
 
   document.getElementById("signOut").onclick = async () => {
     await supabase.auth.signOut();
-    await refreshAuth();
+    refreshAuth();
   };
 
   document.getElementById("seed").onclick = async () => {
     seedOut.textContent = "Running...";
     const { data: sess } = await supabase.auth.getSession();
-    const user = sess.session?.user;
-    if (!user) return log(seedOut, "Sign in first.");
+    if (!sess.session) return log(seedOut, "Sign in first");
 
-    const { data: b, error: bErr } = await supabase
-      .from("budgets")
-      .insert({ name: "My First Budget", created_by: user.id })
-      .select("id")
-      .single();
-    if (bErr) return log(seedOut, bErr);
-    budgetId = b.id;
+    const { data: bid, error: rpcErr } = await supabase
+      .rpc("create_budget_for_current_user", { budget_name: "My First Budget" });
 
-    const { error: mErr } = await supabase
-      .from("budget_members")
-      .insert({ budget_id: budgetId, user_id: user.id, role: "owner" });
-    if (mErr) return log(seedOut, mErr);
+    if (rpcErr) return log(seedOut, rpcErr);
+    budgetId = bid;
 
-    const { error: moErr } = await supabase
-      .from("months")
-      .insert({ budget_id: budgetId, month_key: "2026-01", income_cents: 800000 });
-    if (moErr) return log(seedOut, moErr);
+    let r;
 
-    const { error: cErr } = await supabase
-      .from("monthly_categories")
-      .insert({ budget_id: budgetId, month_key: "2026-01", category_key: "groceries", name: "Groceries", budgeted_cents: 60000, sort_order: 10, is_extra: false });
-    if (cErr) return log(seedOut, cErr);
+    r = await supabase.from("months").insert({
+      budget_id: budgetId,
+      month_key: "2026-01",
+      income_cents: 800000
+    });
+    if (r.error) return log(seedOut, r.error);
 
-    const { error: eErr } = await supabase
-      .from("monthly_expenses")
-      .insert({ budget_id: budgetId, month_key: "2026-01", category_key: "groceries", vendor: "Walmart", item: "Food", amount_cents: 12345, expense_date: "2026-01-05", note: "seed" });
-    if (eErr) return log(seedOut, eErr);
+    r = await supabase.from("monthly_categories").insert({
+      budget_id: budgetId,
+      month_key: "2026-01",
+      category_key: "groceries",
+      name: "Groceries",
+      budgeted_cents: 60000,
+      sort_order: 10,
+      is_extra: false
+    });
+    if (r.error) return log(seedOut, r.error);
+
+    r = await supabase.from("monthly_expenses").insert({
+      budget_id: budgetId,
+      month_key: "2026-01",
+      category_key: "groceries",
+      vendor: "Walmart",
+      item: "Food",
+      amount_cents: 12345,
+      expense_date: "2026-01-05"
+    });
+    if (r.error) return log(seedOut, r.error);
 
     log(seedOut, { ok: true, budgetId });
   };
 
   document.getElementById("listBudgets").onclick = async () => {
-    const { data, error } = await supabase.from("budgets").select("id,name,created_at").order("created_at",{ascending:false});
+    const { data, error } = await supabase.from("budgets").select("id,name");
     log(testOut, error || data);
   };
 
   document.getElementById("checkExtra").onclick = async () => {
-    if (!budgetId) return log(testOut, "Run seed first.");
     const { data, error } = await supabase
       .from("monthly_categories")
-      .select("category_key,name,is_extra")
+      .select("category_key,is_extra")
       .eq("budget_id", budgetId)
       .eq("month_key", "2026-01");
-    if (error) return log(testOut, error);
-    const hasExtra = data.some(r => r.category_key === "extra99" && r.name === "Extra" && r.is_extra === true);
-    log(testOut, { hasExtra, rows: data });
+    log(testOut, error || data);
   };
 
   document.getElementById("catDelete").onclick = async () => {
-    if (!budgetId) return log(testOut, "Run seed first.");
-    const catKey = "tmp_" + Math.random().toString(16).slice(2,8);
+    const key = "tmp_" + Math.random().toString(16).slice(2, 6);
 
     let r = await supabase.from("monthly_categories").insert({
-      budget_id: budgetId, month_key: "2026-01", category_key: catKey, name: "Temp", budgeted_cents: 1000, sort_order: 20, is_extra: false
+      budget_id: budgetId,
+      month_key: "2026-01",
+      category_key: key,
+      name: "Temp",
+      budgeted_cents: 1000,
+      sort_order: 20,
+      is_extra: false
     });
     if (r.error) return log(testOut, r.error);
 
-    const ins = await supabase.from("monthly_expenses").insert({
-      budget_id: budgetId, month_key: "2026-01", category_key: catKey,
-      vendor: "Test", item: "Test", amount_cents: 500, expense_date: "2026-01-06"
+    const ex = await supabase.from("monthly_expenses").insert({
+      budget_id: budgetId,
+      month_key: "2026-01",
+      category_key: key,
+      vendor: "Test",
+      item: "Item",
+      amount_cents: 500,
+      expense_date: "2026-01-06"
     }).select("id").single();
-    if (ins.error) return log(testOut, ins.error);
+    if (ex.error) return log(testOut, ex.error);
 
-    const del = await supabase.from("monthly_categories").delete()
-      .eq("budget_id", budgetId).eq("month_key","2026-01").eq("category_key", catKey);
-    if (del.error) return log(testOut, del.error);
+    r = await supabase.from("monthly_categories")
+      .delete()
+      .eq("budget_id", budgetId)
+      .eq("month_key", "2026-01")
+      .eq("category_key", key);
+    if (r.error) return log(testOut, r.error);
 
-    const read = await supabase.from("monthly_expenses").select("id,category_key").eq("id", ins.data.id).single();
-    if (read.error) return log(testOut, read.error);
+    const chk = await supabase.from("monthly_expenses")
+      .select("category_key")
+      .eq("id", ex.data.id)
+      .single();
 
-    log(testOut, { movedToExtra: read.data.category_key === "extra99", expense: read.data });
+    log(testOut, chk.error || chk.data);
   };
 
   document.getElementById("delMonth").onclick = async () => {
-    if (!budgetId) return log(testOut, "Run seed first.");
-    const del = await supabase.from("months").delete().eq("budget_id", budgetId).eq("month_key","2026-01");
-    if (del.error) return log(testOut, del.error);
-    log(testOut, { deleted: true });
+    const r = await supabase.from("months")
+      .delete()
+      .eq("budget_id", budgetId)
+      .eq("month_key", "2026-01");
+    log(testOut, r.error || { deleted: true });
   };
 
-  await refreshAuth();
+  refreshAuth();
 </script>
+
 </body>
 </html>
