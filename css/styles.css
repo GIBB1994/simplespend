@@ -23,6 +23,12 @@
   /* 3-column grid sizes */
   --col-amount: 170px;
   --col-ring: 56px;
+
+  /* Annual banners */
+  --annual-budget-bg: rgba(37,99,235,.08);
+  --annual-budget-bd: rgba(37,99,235,.22);
+  --annual-fund-bg: rgba(22,163,74,.08);
+  --annual-fund-bd: rgba(22,163,74,.22);
 }
 
 *{box-sizing:border-box}
@@ -266,15 +272,7 @@ body{
   cursor:pointer;
   font: inherit;
 }
-.amountline{
-  font-weight: 900;
-}
-.amountmode{
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 800;
-  margin-top: 2px;
-}
+.amountline{font-weight: 900;}
 
 /* Progress ring */
 .ring{
@@ -311,7 +309,7 @@ body{
   will-change: max-height, opacity, transform;
 }
 .detail-anim.open{
-  max-height: 1600px;
+  max-height: 2200px;
   opacity: 1;
   transform: translateY(0);
 }
@@ -359,6 +357,35 @@ body{
   font-weight: 900;
 }
 .icon-btn:hover{background: rgba(37,99,235,.06)}
+
+.auto-pill{
+  display:inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--muted);
+  border:1px solid rgba(71,84,103,.22);
+  background: rgba(71,84,103,.08);
+}
+
+/* Annual banners */
+.annual-wrap{display:flex; flex-direction:column; gap:10px}
+.annual-banner{
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-weight: 900;
+  font-size: 14px;
+  border:1px solid rgba(198,208,223,.95);
+}
+.annual-banner-budget{
+  background: var(--annual-budget-bg);
+  border-color: var(--annual-budget-bd);
+}
+.annual-banner-fund{
+  background: var(--annual-fund-bg);
+  border-color: var(--annual-fund-bd);
+}
 
 /* Modal */
 .modal{ position:fixed; inset:0; display:grid; place-items:center; z-index:50; }
