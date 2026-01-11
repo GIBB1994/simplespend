@@ -1,4 +1,4 @@
-/* SimpleSpend v0.7
+/* SimpleSpend v0.8
   - Annual items split into:
       * Annual Budgets (year-scoped, initial(auto)=Budgeted)
       * Sinking Funds (year-scoped ledger; initial(auto) carries forward at Jan)
@@ -13,8 +13,8 @@
   - Contributions support Edit/Delete (initial(auto) is not directly editable)
 */
 
-const APP_FALLBACK_VERSION = "v0.7";
-const STORAGE_KEY = "simplespend_v07";
+const APP_FALLBACK_VERSION = "v0.8";
+const STORAGE_KEY = "simplespend_v08";
 
 const EXTRA_ID = "__extra__";
 const EXTRA_NAME = "Extra";
@@ -198,6 +198,9 @@ function wireEvents(){
     // Best-effort: ensure category exists across all months in this year
     propagateAnnualCategoryToYear(year, cat);
 
+    // v0.8: make sure this year's initial(auto) is clean + in the right place
+    normalizeInitialAutoContributionsForYear(year);
+
     saveState();
     render();
   });
@@ -238,6 +241,11 @@ function render(){
 
   // Keep annual category definitions consistent across the year (best-effort)
   syncAnnualCategoriesAcrossYear(currentMonthKey.slice(0,4));
+
+  // v0.8: ensure initial(auto) lives in January (or earliest month) with no duplicates
+  const y = currentMonthKey.slice(0,4);
+  if (normalizeInitialAutoContributionsForYear(y)) saveState();
+
 
   renderTotalsOnly();
   renderMonthlyTable();
@@ -1128,10 +1136,92 @@ function createBudgetForMonth(monthKey, copyPrev){
     (base.annualCategories || []).filter(c => c.kind === "sinking_fund").forEach(c => {
       ensureSinkingFundCarryForward(year, c.id);
     });
+    // v0.8: if initials were created earlier in another month, move them into January and de-dupe
+    normalizeInitialAutoContributionsForYear(year);
+
   }
 
   saveState();
 }
+
+// -------------------- Normalize initial(auto) placement --------------------
+/*
+  Goal:
+  - Exactly ONE "initial" contribution per (year, categoryId)
+  - If January exists, it must live in January
+  - Otherwise it lives in the earliest month in that year
+  - If duplicates exist, keep the best candidate (prefer non-zero, then prefer the preferred month)
+*/
+function normalizeInitialAutoContributionsForYear(year){
+  const yearKeys = Object.keys(state.budgets).filter(k => k.startsWith(year + "-")).sort();
+  if (!yearKeys.length) return false;
+
+  const janKey = `${year}-01`;
+  const preferredKey = state.budgets[janKey] ? janKey : yearKeys[0];
+
+  // collect all initial contributions across months => { categoryId: [ {mk, idx, rec} ... ] }
+  const map = new Map();
+
+  yearKeys.forEach(mk => {
+    const b = state.budgets[mk];
+    const list = b?.contributions || [];
+    for (let i = 0; i < list.length; i++){
+      const c = list[i];
+      if (c?.kind !== "initial") continue;
+      const cid = c.categoryId;
+      if (!cid) continue;
+      if (!map.has(cid)) map.set(cid, []);
+      map.get(cid).push({ mk, idx: i, rec: c });
+    }
+  });
+
+  if (map.size === 0) return false;
+
+  let changed = false;
+
+  for (const [categoryId, hits] of map.entries()){
+    if (!hits.length) continue;
+
+    // Pick best keeper:
+    // 1) prefer in preferredKey
+    // 2) prefer non-zero amount
+    // 3) otherwise first hit
+    let keeper = null;
+
+    const inPreferred = hits.filter(h => h.mk === preferredKey);
+    const candidates = inPreferred.length ? inPreferred : hits;
+
+    const nonZero = candidates.filter(h => (Number(h.rec.amount) || 0) !== 0);
+    keeper = nonZero.length ? nonZero[0] : candidates[0];
+
+    const keepRec = { ...keeper.rec };
+
+    // Remove ALL initial contributions for this category across the year
+    yearKeys.forEach(mk => {
+      const b = state.budgets[mk];
+      if (!b?.contributions?.length) return;
+      const before = b.contributions.length;
+      b.contributions = b.contributions.filter(c => !(c.kind === "initial" && c.categoryId === categoryId));
+      if (b.contributions.length !== before) changed = true;
+    });
+
+    // Re-insert keeper into preferredKey
+    const pb = state.budgets[preferredKey];
+    pb.contributions = pb.contributions || [];
+
+    // Ensure date is Jan 1 for the year (keeps things consistent)
+    keepRec.dateISO = `${year}-01-01`;
+    keepRec.kind = "initial";
+    keepRec.categoryId = categoryId;
+    keepRec.amount = Number(keepRec.amount) || 0;
+
+    pb.contributions.push(keepRec);
+    changed = true;
+  }
+
+  return changed;
+}
+
 
 // -------------------- Annual initial(auto) helpers --------------------
 function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
@@ -1526,36 +1616,48 @@ function escapeAttr(str){
 
 // -------------------- Migration (best-effort) --------------------
 function migrateLegacyStateIfNeeded(){
-  // If v0.7 already has data, do nothing
+  // If v0.8 already has data, do nothing
   if (Object.keys(state.budgets || {}).length) return;
 
-  try{
-    const raw = localStorage.getItem("simplespend_v06");
-    if (!raw) return;
-    const legacy = JSON.parse(raw);
-    if (!legacy?.budgets) return;
+  const tryKeys = ["simplespend_v07", "simplespend_v06"];
 
-    Object.entries(legacy.budgets).forEach(([mk, b]) => {
-      const nb = {
-        income: Number(b.income)||0,
-        monthlyCategories: Array.isArray(b.monthlyCategories) ? b.monthlyCategories : [],
-        annualCategories: Array.isArray(b.annualCategories) ? b.annualCategories.map(c => ({
-          id: c.id,
-          kind: c.kind || "annual_budget",
-          name: c.name || "Unnamed",
-          // v0.6 used target/balance patterns; map to budgeted/goal display-only
-          budgeted: Number(c.target ?? c.budgeted ?? 0) || 0,
-          goal: Number(c.goal ?? 0) || 0
-        })) : [],
-        expenses: Array.isArray(b.expenses) ? b.expenses : [],
-        contributions: Array.isArray(b.contributions) ? b.contributions.map(c => ({...c, kind: c.kind || "manual"})) : []
-      };
+  for (const key of tryKeys){
+    try{
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
 
-      state.budgets[mk] = nb;
-    });
+      const legacy = JSON.parse(raw);
+      if (!legacy?.budgets) continue;
 
-    saveState();
-  } catch {
-    // ignore
+      Object.entries(legacy.budgets).forEach(([mk, b]) => {
+        const nb = {
+          income: Number(b.income)||0,
+          monthlyCategories: Array.isArray(b.monthlyCategories) ? b.monthlyCategories : [],
+          annualCategories: Array.isArray(b.annualCategories) ? b.annualCategories.map(c => ({
+            id: c.id,
+            kind: c.kind || "annual_budget",
+            name: c.name || "Unnamed",
+            // v0.6/v0.7 compatibility
+            budgeted: Number(c.target ?? c.budgeted ?? 0) || 0,
+            goal: Number(c.goal ?? 0) || 0
+          })) : [],
+          expenses: Array.isArray(b.expenses) ? b.expenses : [],
+          contributions: Array.isArray(b.contributions)
+            ? b.contributions.map(c => ({ ...c, kind: c.kind || "manual" }))
+            : []
+        };
+
+        state.budgets[mk] = nb;
+      });
+
+      // Normalize all years we imported (keeps things sane immediately)
+      const years = new Set(Object.keys(state.budgets).map(mk => mk.slice(0,4)));
+      years.forEach(y => normalizeInitialAutoContributionsForYear(y));
+
+      saveState();
+      return; // stop after first successful migration
+    } catch {
+      // keep trying next key
+    }
   }
 }
