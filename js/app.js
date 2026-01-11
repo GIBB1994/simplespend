@@ -19,6 +19,7 @@ const STORAGE_KEY = "simplespend_v08";
 const EXTRA_ID = "__extra__";
 const EXTRA_NAME = "Extra";
 
+// -------------------- DOM --------------------
 const monthSelect = document.getElementById("monthSelect");
 const prevMonthBtn = document.getElementById("prevMonthBtn");
 const nextMonthBtn = document.getElementById("nextMonthBtn");
@@ -59,10 +60,11 @@ const closePromptModalBtn = document.getElementById("closePromptModalBtn");
 const promptCancelBtn = document.getElementById("promptCancelBtn");
 const promptOkBtn = document.getElementById("promptOkBtn");
 
+// -------------------- UI state --------------------
 let expanded = { type: null, id: null }; // "monthly" | "annual_budget" | "sinking_fund"
 let amountMode = "left"; // "left" or "spent" (global toggle; not used for sinking funds)
 
-// -------------------- State --------------------
+// -------------------- App state --------------------
 let state = null;
 let currentMonthKey = null;
 let _booted = false;
@@ -72,28 +74,26 @@ export async function initApp({ supabase, user }) {
   if (_booted) return;
   _booted = true;
 
-  console.log("Signed in:", user?.email);
+  console.log("Signed in:", user?.email || "(unknown)");
 
-  // set up state only now
   state = loadState();
   migrateLegacyStateIfNeeded();
 
   currentMonthKey = getMonthKey(new Date());
 
-  loadVersionBadge();
+  await loadVersionBadge();
   seedMonthSelect();
   setMonth(currentMonthKey);
   wireEvents();
   render();
 }
 
-
 // -------------------- Version --------------------
-async function loadVersionBadge(){
+async function loadVersionBadge() {
   const badge = document.getElementById("versionBadge");
   if (!badge) return;
 
-  try{
+  try {
     const res = await fetch("./VERSION.txt", { cache: "no-store" });
     if (!res.ok) throw new Error("Bad response");
     const txt = (await res.text()).trim();
@@ -104,22 +104,22 @@ async function loadVersionBadge(){
 }
 
 // -------------------- Events --------------------
-function wireEvents(){
-  prevMonthBtn.addEventListener("click", () => setMonth(addMonths(currentMonthKey, -1)));
-  nextMonthBtn.addEventListener("click", () => setMonth(addMonths(currentMonthKey, +1)));
-  monthSelect.addEventListener("change", () => setMonth(monthSelect.value));
+function wireEvents() {
+  prevMonthBtn?.addEventListener("click", () => setMonth(addMonths(currentMonthKey, -1)));
+  nextMonthBtn?.addEventListener("click", () => setMonth(addMonths(currentMonthKey, +1)));
+  monthSelect?.addEventListener("change", () => setMonth(monthSelect.value));
 
-  createMonthBtn.addEventListener("click", () => {
-    createBudgetForMonth(currentMonthKey, copyPrevCheckbox.checked);
+  createMonthBtn?.addEventListener("click", () => {
+    createBudgetForMonth(currentMonthKey, !!copyPrevCheckbox?.checked);
     render();
   });
 
-  addExpenseBtn.addEventListener("click", () => openExpenseModal({}));
+  addExpenseBtn?.addEventListener("click", () => openExpenseModal({}));
 
   // Income input
-  incomeInput.addEventListener("focus", () => incomeInput.select());
-  incomeInput.addEventListener("click", () => incomeInput.select());
-  incomeInput.addEventListener("input", () => {
+  incomeInput?.addEventListener("focus", () => incomeInput.select());
+  incomeInput?.addEventListener("click", () => incomeInput.select());
+  incomeInput?.addEventListener("input", () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
     b.income = parseMoney(incomeInput.value);
@@ -128,20 +128,21 @@ function wireEvents(){
   });
 
   // Add monthly category
-  addMonthlyCategoryBtn.addEventListener("click", async () => {
+  addMonthlyCategoryBtn?.addEventListener("click", async () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
 
     const res = await promptForm("Add Monthly Category", [
-      { key:"name", label:"Name", type:"text", placeholder:"Groceries" },
-      { key:"budgeted", label:"Budgeted", type:"money", placeholder:"0.00" }
+      { key: "name", label: "Name", type: "text", placeholder: "Groceries" },
+      { key: "budgeted", label: "Budgeted", type: "money", placeholder: "0.00" },
     ]);
     if (!res) return;
 
+    b.monthlyCategories = b.monthlyCategories || [];
     b.monthlyCategories.push({
       id: uid(),
       name: (res.name || "").trim() || "Unnamed",
-      budgeted: parseMoney(res.budgeted)
+      budgeted: parseMoney(res.budgeted),
     });
 
     saveState();
@@ -149,22 +150,28 @@ function wireEvents(){
   });
 
   // Add annual item (Annual Budget or Sinking Fund)
-  addAnnualCategoryBtn.addEventListener("click", async () => {
+  addAnnualCategoryBtn?.addEventListener("click", async () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
 
     const res = await promptForm("Add Annual Item", [
-      { key:"kind", label:"Type", type:"select", value:"annual_budget", options:[
-        { value:"annual_budget", label:"Annual Budget" },
-        { value:"sinking_fund", label:"Sinking Fund" }
-      ]},
-      { key:"name", label:"Name", type:"text", placeholder:"Vacation" },
-      { key:"amount", label:"Budgeted / Goal", type:"money", placeholder:"2000.00" },
-      { key:"start", label:"Starting Balance (fund only)", type:"money", placeholder:"0.00" }
+      {
+        key: "kind",
+        label: "Type",
+        type: "select",
+        value: "annual_budget",
+        options: [
+          { value: "annual_budget", label: "Annual Budget" },
+          { value: "sinking_fund", label: "Sinking Fund" },
+        ],
+      },
+      { key: "name", label: "Name", type: "text", placeholder: "Vacation" },
+      { key: "amount", label: "Budgeted / Goal", type: "money", placeholder: "2000.00" },
+      { key: "start", label: "Starting Balance (fund only)", type: "money", placeholder: "0.00" },
     ]);
     if (!res) return;
 
-    const kind = (res.kind === "sinking_fund") ? "sinking_fund" : "annual_budget";
+    const kind = res.kind === "sinking_fund" ? "sinking_fund" : "annual_budget";
     const id = uid();
     const name = (res.name || "").trim() || "Unnamed";
     const amt = parseMoney(res.amount);
@@ -176,32 +183,32 @@ function wireEvents(){
       name,
       // display-only
       budgeted: kind === "annual_budget" ? amt : 0,
-      goal: kind === "sinking_fund" ? amt : 0
+      goal: kind === "sinking_fund" ? amt : 0,
     };
 
     b.annualCategories = b.annualCategories || [];
     b.annualCategories.push(cat);
 
-    const year = currentMonthKey.slice(0,4);
+    const year = currentMonthKey.slice(0, 4);
 
     // Create/Set initial(auto)
-    if (kind === "annual_budget"){
+    if (kind === "annual_budget") {
       upsertInitialAutoContribution({
         year,
         categoryId: id,
         amount: cat.budgeted || 0,
-        mode: "set"
+        mode: "set",
       });
     } else {
       // Always create an initial(auto) for this fund in this year.
       // Use the typed starting balance if non-zero, otherwise seed with 0.
-      const initialAmount = (start != null && start !== 0) ? start : 0;
+      const initialAmount = start != null && start !== 0 ? start : 0;
 
       upsertInitialAutoContribution({
         year,
         categoryId: id,
         amount: initialAmount,
-        mode: "set"
+        mode: "set",
       });
 
       // Ensure carry-forward only adjusts when there is real prior-year activity.
@@ -211,7 +218,7 @@ function wireEvents(){
     // Best-effort: ensure category exists across all months in this year
     propagateAnnualCategoryToYear(year, cat);
 
-    // v0.8: make sure this year's initial(auto) is clean + in the right place
+    // v0.8: make sure this year's initial(auto) is clean + in the right place (and doesn't drop non-zero)
     normalizeInitialAutoContributionsForYear(year);
 
     saveState();
@@ -219,46 +226,43 @@ function wireEvents(){
   });
 
   // Expense modal close
-  closeExpenseModalBtn.addEventListener("click", () => closeModal(expenseModal));
-  expenseModal.addEventListener("click", (e) => {
+  closeExpenseModalBtn?.addEventListener("click", () => closeModal(expenseModal));
+  expenseModal?.addEventListener("click", (e) => {
     if (e.target?.dataset?.close === "true") closeModal(expenseModal);
   });
 
-  saveExpenseBtn.addEventListener("click", () => saveExpense({ keepOpen:false }));
-  saveAndAddAnotherBtn.addEventListener("click", () => saveExpense({ keepOpen:true }));
+  saveExpenseBtn?.addEventListener("click", () => saveExpense({ keepOpen: false }));
+  saveAndAddAnotherBtn?.addEventListener("click", () => saveExpense({ keepOpen: true }));
 
   // Prompt modal close
-  promptModal.addEventListener("click", (e) => {
+  promptModal?.addEventListener("click", (e) => {
     if (e.target?.dataset?.close === "true") closeModal(promptModal);
   });
-  closePromptModalBtn.addEventListener("click", () => closeModal(promptModal));
-  promptCancelBtn.addEventListener("click", () => closeModal(promptModal));
+  closePromptModalBtn?.addEventListener("click", () => closeModal(promptModal));
+  promptCancelBtn?.addEventListener("click", () => closeModal(promptModal));
 }
 
 // -------------------- Rendering --------------------
-function render(){
+function render() {
+  if (!state || !currentMonthKey) return;
+
   seedMonthSelect();
-  monthSelect.value = currentMonthKey;
+  if (monthSelect) monthSelect.value = currentMonthKey;
 
   const b = getBudget(currentMonthKey);
-  if (!b){
-    monthMissingState.classList.remove("hidden");
-    monthExistsState.classList.add("hidden");
+  if (!b) {
+    monthMissingState?.classList.remove("hidden");
+    monthExistsState?.classList.add("hidden");
     return;
   }
 
-  monthMissingState.classList.add("hidden");
-  monthExistsState.classList.remove("hidden");
+  monthMissingState?.classList.add("hidden");
+  monthExistsState?.classList.remove("hidden");
 
-  incomeInput.value = moneyToInput(b.income);
+  if (incomeInput) incomeInput.value = moneyToInput(b.income);
 
   // Keep annual category definitions consistent across the year (best-effort)
-  syncAnnualCategoriesAcrossYear(currentMonthKey.slice(0,4));
-
-  // v0.8: ensure initial(auto) lives in January (or earliest month) with no duplicates
-  const y = currentMonthKey.slice(0,4);
-  if (normalizeInitialAutoContributionsForYear(y)) saveState();
-
+  syncAnnualCategoriesAcrossYear(currentMonthKey.slice(0, 4));
 
   renderTotalsOnly();
   renderMonthlyTable();
@@ -266,27 +270,32 @@ function render(){
   refreshExpenseCategoryDropdown();
 }
 
-function renderTotalsOnly(){
+function renderTotalsOnly() {
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
   const incomeC = toCents(b.income);
-  const monthlyBudgetedC = sumCents((b.monthlyCategories || []).map(c => toCents(c.budgeted)));
-  const monthlySpentC = sumCents(getMonthExpenses(b, "monthly").map(x => toCents(x.amount)));
+  const monthlyBudgetedC = sumCents((b.monthlyCategories || []).map((c) => toCents(c.budgeted)));
+  const monthlySpentC = sumCents(getMonthExpenses(b, "monthly").map((x) => toCents(x.amount)));
 
   const plannedC = incomeC - monthlyBudgetedC; // can go negative
-  const leftC = incomeC - monthlySpentC;       // can go negative
+  const leftC = incomeC - monthlySpentC; // can go negative
 
-  plannedRemainingEl.textContent = fmtMoneyNoCents(fromCents(plannedC));
-  leftToSpendEl.textContent = fmtMoneyNoCents(fromCents(leftC));
-
-  plannedRemainingEl.className = "stat-value " + (plannedC < 0 ? "negative" : "positive");
-  leftToSpendEl.className = "stat-value " + (leftC < 0 ? "negative" : "positive");
+  if (plannedRemainingEl) {
+    plannedRemainingEl.textContent = fmtMoneyNoCents(fromCents(plannedC));
+    plannedRemainingEl.className = "stat-value " + (plannedC < 0 ? "negative" : "positive");
+  }
+  if (leftToSpendEl) {
+    leftToSpendEl.textContent = fmtMoneyNoCents(fromCents(leftC));
+    leftToSpendEl.className = "stat-value " + (leftC < 0 ? "negative" : "positive");
+  }
 }
 
 // -------------------- Monthly Table --------------------
-function renderMonthlyTable(){
+function renderMonthlyTable() {
   const b = getBudget(currentMonthKey);
+  if (!b || !monthlyTable) return;
+
   const expenses = getMonthExpenses(b, "monthly");
 
   const header = `
@@ -298,31 +307,34 @@ function renderMonthlyTable(){
   `;
 
   const rows = [];
-  (b.monthlyCategories || []).forEach(c => rows.push({ id:c.id, name:c.name, total:c.budgeted, kind:"normal" }));
+  (b.monthlyCategories || []).forEach((c) =>
+    rows.push({ id: c.id, name: c.name, total: c.budgeted, kind: "normal" })
+  );
 
-  const extraSpentC = sumCents(expenses.filter(e => e.categoryId === EXTRA_ID).map(e => toCents(e.amount)));
-  if (extraSpentC !== 0){
-    rows.push({ id:EXTRA_ID, name:EXTRA_NAME, total:0, kind:"extra" });
+  const extraSpentC = sumCents(expenses.filter((e) => e.categoryId === EXTRA_ID).map((e) => toCents(e.amount)));
+  if (extraSpentC !== 0) {
+    rows.push({ id: EXTRA_ID, name: EXTRA_NAME, total: 0, kind: "extra" });
   }
 
-  if (!rows.length){
+  if (!rows.length) {
     monthlyTable.innerHTML = header + emptyRow("No monthly categories yet. Add one.");
     return;
   }
 
   let html = header;
 
-  rows.forEach(cat => {
-    const catExpenses = expenses.filter(e => e.categoryId === cat.id);
-    const spentC = sumCents(catExpenses.map(e => toCents(e.amount)));
+  rows.forEach((cat) => {
+    const catExpenses = expenses.filter((e) => e.categoryId === cat.id);
+    const spentC = sumCents(catExpenses.map((e) => toCents(e.amount)));
     const totalC = toCents(cat.total || 0);
     const leftC = totalC - spentC;
 
-    const line = amountMode === "left"
-      ? `${fmtMoneyNoCents(fromCents(leftC))} / ${fmtMoneyNoCents(fromCents(totalC))}`
-      : `${fmtMoneyNoCents(fromCents(spentC))} / ${fmtMoneyNoCents(fromCents(totalC))}`;
+    const line =
+      amountMode === "left"
+        ? `${fmtMoneyNoCents(fromCents(leftC))} / ${fmtMoneyNoCents(fromCents(totalC))}`
+        : `${fmtMoneyNoCents(fromCents(spentC))} / ${fmtMoneyNoCents(fromCents(totalC))}`;
 
-    const lineClass = (amountMode === "left" && leftC < 0) ? "negative" : "";
+    const lineClass = amountMode === "left" && leftC < 0 ? "negative" : "";
 
     // Ring drains as remaining decreases (full when left=total)
     const pctRemain = remainingPct(leftC, totalC);
@@ -360,15 +372,19 @@ function renderMonthlyTable(){
               ${cat.kind !== "extra" ? `<button class="btn btn-ghost" data-del-cat="monthly:${cat.id}">Delete Category</button>` : ``}
             </div>
 
-            ${catExpenses.length ? `
+            ${
+              catExpenses.length
+                ? `
               <div class="detail-list">
                 ${catExpenses
                   .slice()
-                  .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
-                  .map(ex => inlineExpenseCardHtml(ex))
+                  .sort((a, b) => (a.dateISO || "").localeCompare(b.dateISO || ""))
+                  .map((ex) => inlineExpenseCardHtml(ex))
                   .join("")}
               </div>
-            ` : `<div class="cell-muted">No expenses in this category this month.</div>`}
+            `
+                : `<div class="cell-muted">No expenses in this category this month.</div>`
+            }
           </div>
         </div>
       </div>
@@ -382,14 +398,21 @@ function renderMonthlyTable(){
 }
 
 // -------------------- Annual Tables --------------------
-function renderAnnualTables(){
+function renderAnnualTables() {
   const b = getBudget(currentMonthKey);
-  const year = currentMonthKey.slice(0,4);
+  if (!b) return;
+
+  const year = currentMonthKey.slice(0, 4);
+
+  // Ensure initial(auto) lives in January (or earliest month) with no duplicates,
+  // but DO NOT drop non-zero initials.
+  const changed = normalizeInitialAutoContributionsForYear(year);
+  if (changed) saveState();
 
   // Ensure sinking funds have correct initial(auto) for the year (safe; won't overwrite start balance)
   (b.annualCategories || [])
-    .filter(c => c.kind === "sinking_fund")
-    .forEach(c => ensureSinkingFundCarryForward(year, c.id));
+    .filter((c) => c.kind === "sinking_fund")
+    .forEach((c) => ensureSinkingFundCarryForward(year, c.id));
 
   const header = `
     <div class="thead listgrid">
@@ -399,26 +422,30 @@ function renderAnnualTables(){
     </div>
   `;
 
-  const budgets = (b.annualCategories || []).filter(c => c.kind === "annual_budget");
-  annualBudgetTable.innerHTML = budgets.length
-    ? header + budgets.map(cat => annualBudgetRowHtml(cat, year)).join("")
-    : header + emptyRow("No annual budgets yet. Add one.");
+  const budgets = (b.annualCategories || []).filter((c) => c.kind === "annual_budget");
+  if (annualBudgetTable) {
+    annualBudgetTable.innerHTML = budgets.length
+      ? header + budgets.map((cat) => annualBudgetRowHtml(cat, year)).join("")
+      : header + emptyRow("No annual budgets yet. Add one.");
 
-  const funds = (b.annualCategories || []).filter(c => c.kind === "sinking_fund");
-  sinkingFundTable.innerHTML = funds.length
-    ? sinkingHeaderHtml() + funds.map(cat => sinkingFundRowHtml(cat, year)).join("")
-    : sinkingHeaderHtml() + emptyRow("No sinking funds yet. Add one.");
+    bindListInteractions(annualBudgetTable);
+    bindExpenseCardActions(annualBudgetTable);
+    bindContributionActions(annualBudgetTable);
+  }
 
-  bindListInteractions(annualBudgetTable);
-  bindExpenseCardActions(annualBudgetTable);
-  bindContributionActions(annualBudgetTable);
+  const funds = (b.annualCategories || []).filter((c) => c.kind === "sinking_fund");
+  if (sinkingFundTable) {
+    sinkingFundTable.innerHTML = funds.length
+      ? sinkingHeaderHtml() + funds.map((cat) => sinkingFundRowHtml(cat, year)).join("")
+      : sinkingHeaderHtml() + emptyRow("No sinking funds yet. Add one.");
 
-  bindListInteractions(sinkingFundTable);
-  bindExpenseCardActions(sinkingFundTable);
-  bindContributionActions(sinkingFundTable);
+    bindListInteractions(sinkingFundTable);
+    bindExpenseCardActions(sinkingFundTable);
+    bindContributionActions(sinkingFundTable);
+  }
 }
 
-function annualBudgetRowHtml(cat, year){
+function annualBudgetRowHtml(cat, year) {
   const ytd = getYearToDateAnnualLedger(year, cat.id);
 
   // Annual budget "total" is contributions (initial(auto)=budgeted plus any extras)
@@ -426,11 +453,12 @@ function annualBudgetRowHtml(cat, year){
   const spentC = toCents(ytd.spentTotal);
   const leftC = totalC - spentC;
 
-  const line = amountMode === "left"
-    ? `${fmtMoneyNoCents(fromCents(leftC))} / ${fmtMoneyNoCents(fromCents(totalC))}`
-    : `${fmtMoneyNoCents(fromCents(spentC))} / ${fmtMoneyNoCents(fromCents(totalC))}`;
+  const line =
+    amountMode === "left"
+      ? `${fmtMoneyNoCents(fromCents(leftC))} / ${fmtMoneyNoCents(fromCents(totalC))}`
+      : `${fmtMoneyNoCents(fromCents(spentC))} / ${fmtMoneyNoCents(fromCents(totalC))}`;
 
-  const lineClass = (amountMode === "left" && leftC < 0) ? "negative" : "";
+  const lineClass = amountMode === "left" && leftC < 0 ? "negative" : "";
 
   const pctRemain = remainingPct(leftC, totalC);
   const ringColor = remainingTone(leftC, totalC);
@@ -468,34 +496,42 @@ function annualBudgetRowHtml(cat, year){
             <button class="btn btn-ghost" data-del-cat="annual:${cat.id}">Delete</button>
           </div>
 
-          ${contribs.length ? `
+          ${
+            contribs.length
+              ? `
             <div class="detail-muted">Contributions (year)</div>
             <div class="detail-list">
               ${contribs
                 .slice()
-                .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
-                .map(c => inlineContributionCardHtml(c))
+                .sort((a, b) => (a.dateISO || "").localeCompare(b.dateISO || ""))
+                .map((c) => inlineContributionCardHtml(c))
                 .join("")}
             </div>
-          ` : ``}
+          `
+              : ``
+          }
 
           <div class="detail-muted">Expenses (year)</div>
-          ${expenses.length ? `
+          ${
+            expenses.length
+              ? `
             <div class="detail-list">
               ${expenses
                 .slice()
-                .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
-                .map(ex => inlineExpenseCardHtml(ex))
+                .sort((a, b) => (a.dateISO || "").localeCompare(b.dateISO || ""))
+                .map((ex) => inlineExpenseCardHtml(ex))
                 .join("")}
-              </div>
-          ` : `<div class="cell-muted">No expenses yet this year.</div>`}
+            </div>
+          `
+              : `<div class="cell-muted">No expenses yet this year.</div>`
+          }
         </div>
       </div>
     </div>
   `;
 }
 
-function sinkingHeaderHtml(){
+function sinkingHeaderHtml() {
   return `
     <div class="thead listgrid">
       <div>Category</div>
@@ -505,7 +541,7 @@ function sinkingHeaderHtml(){
   `;
 }
 
-function sinkingFundRowHtml(cat, year){
+function sinkingFundRowHtml(cat, year) {
   const ytd = getYearToDateAnnualLedger(year, cat.id);
 
   const totalC = toCents(ytd.contribTotal);
@@ -516,8 +552,8 @@ function sinkingFundRowHtml(cat, year){
   const lineClass = balC < 0 ? "negative" : "";
 
   const goalC = toCents(cat.goal || 0);
-  const pct = goalC > 0 ? clamp01(balC / goalC) : (balC > 0 ? 1 : 0);
-  const ringColor = (balC < 0) ? "bad" : (goalC > 0 && balC >= goalC) ? "accent" : "warn";
+  const pct = goalC > 0 ? clamp01(balC / goalC) : balC > 0 ? 1 : 0;
+  const ringColor = balC < 0 ? "bad" : goalC > 0 && balC >= goalC ? "accent" : "warn";
   const isOpen = expanded.type === "sinking_fund" && expanded.id === cat.id;
 
   const contribs = ytd.contributions;
@@ -552,27 +588,35 @@ function sinkingFundRowHtml(cat, year){
             <button class="btn btn-ghost" data-del-cat="annual:${cat.id}">Delete</button>
           </div>
 
-          ${contribs.length ? `
+          ${
+            contribs.length
+              ? `
             <div class="detail-muted">Contributions (year)</div>
             <div class="detail-list">
               ${contribs
                 .slice()
-                .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
-                .map(c => inlineContributionCardHtml(c))
+                .sort((a, b) => (a.dateISO || "").localeCompare(b.dateISO || ""))
+                .map((c) => inlineContributionCardHtml(c))
                 .join("")}
             </div>
-          ` : ``}
+          `
+              : ``
+          }
 
           <div class="detail-muted">Expenses (year)</div>
-          ${expenses.length ? `
+          ${
+            expenses.length
+              ? `
             <div class="detail-list">
               ${expenses
                 .slice()
-                .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
-                .map(ex => inlineExpenseCardHtml(ex))
+                .sort((a, b) => (a.dateISO || "").localeCompare(b.dateISO || ""))
+                .map((ex) => inlineExpenseCardHtml(ex))
                 .join("")}
-              </div>
-          ` : `<div class="cell-muted">No expenses yet this year.</div>`}
+            </div>
+          `
+              : `<div class="cell-muted">No expenses yet this year.</div>`
+          }
         </div>
       </div>
     </div>
@@ -580,38 +624,40 @@ function sinkingFundRowHtml(cat, year){
 }
 
 // -------------------- List interactions --------------------
-function bindListInteractions(container){
+function bindListInteractions(container) {
+  if (!container) return;
+
   // Expand/collapse rows
-  container.querySelectorAll("[data-toggle]").forEach(row => {
+  container.querySelectorAll("[data-toggle]").forEach((row) => {
     row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
       const [type, id] = row.dataset.toggle.split(":");
-      expanded = (expanded.type === type && expanded.id === id) ? {type:null, id:null} : {type, id};
+      expanded = expanded.type === type && expanded.id === id ? { type: null, id: null } : { type, id };
       render();
     });
   });
 
   // Amount toggle (global) — only if present and enabled
-  container.querySelectorAll("[data-toggle-amount]").forEach(btn => {
+  container.querySelectorAll("[data-toggle-amount]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (btn.dataset.toggleAmount !== "1") return; // sinking funds use 0
-      amountMode = (amountMode === "left") ? "spent" : "left";
+      amountMode = amountMode === "left" ? "spent" : "left";
       render();
     });
   });
 
   // Add expense
-  container.querySelectorAll("[data-add-exp]").forEach(btn => {
+  container.querySelectorAll("[data-add-exp]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const [type, id] = btn.dataset.addExp.split(":");
-      openExpenseModal({ type, categoryId:id });
+      openExpenseModal({ type, categoryId: id });
     });
   });
 
   // Edit category
-  container.querySelectorAll("[data-edit-cat]").forEach(btn => {
+  container.querySelectorAll("[data-edit-cat]").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       const [type, id] = btn.dataset.editCat.split(":");
@@ -620,7 +666,7 @@ function bindListInteractions(container){
   });
 
   // Delete category => orphan expenses to Extra
-  container.querySelectorAll("[data-del-cat]").forEach(btn => {
+  container.querySelectorAll("[data-del-cat]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const [type, id] = btn.dataset.delCat.split(":");
@@ -629,42 +675,41 @@ function bindListInteractions(container){
   });
 
   // Contribution (annual)
-  container.querySelectorAll("[data-contrib]").forEach(btn => {
+  container.querySelectorAll("[data-contrib]").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      const [_, id] = btn.dataset.contrib.split(":");
+      const [, id] = btn.dataset.contrib.split(":");
       await addContribution(id);
     });
   });
 }
 
 // -------------------- Category actions --------------------
-async function editCategory(type, id){
+async function editCategory(type, id) {
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  if (type === "monthly"){
-    const cat = (b.monthlyCategories || []).find(c => c.id === id);
+  if (type === "monthly") {
+    const cat = (b.monthlyCategories || []).find((c) => c.id === id);
     if (!cat) return;
 
     const res = await promptForm("Edit Monthly Category", [
-      { key:"name", label:"Name", type:"text", value: cat.name },
-      { key:"budgeted", label:"Budgeted", type:"money", value: moneyToInput(cat.budgeted) }
+      { key: "name", label: "Name", type: "text", value: cat.name },
+      { key: "budgeted", label: "Budgeted", type: "money", value: moneyToInput(cat.budgeted) },
     ]);
     if (!res) return;
 
     cat.name = (res.name || "").trim() || cat.name;
     cat.budgeted = parseMoney(res.budgeted);
-
   } else {
-    const year = currentMonthKey.slice(0,4);
-    const cat = (b.annualCategories || []).find(c => c.id === id);
+    const year = currentMonthKey.slice(0, 4);
+    const cat = (b.annualCategories || []).find((c) => c.id === id);
     if (!cat) return;
 
-    if (cat.kind === "annual_budget"){
+    if (cat.kind === "annual_budget") {
       const res = await promptForm("Edit Annual Budget", [
-        { key:"name", label:"Name", type:"text", value: cat.name },
-        { key:"budgeted", label:"Budgeted", type:"money", value: moneyToInput(cat.budgeted || 0) }
+        { key: "name", label: "Name", type: "text", value: cat.name },
+        { key: "budgeted", label: "Budgeted", type: "money", value: moneyToInput(cat.budgeted || 0) },
       ]);
       if (!res) return;
 
@@ -677,12 +722,12 @@ async function editCategory(type, id){
       });
 
       // Keep initial(auto) aligned to budgeted
-      upsertInitialAutoContribution({ year, categoryId:id, amount: newBudgeted, mode:"set" });
-
+      upsertInitialAutoContribution({ year, categoryId: id, amount: newBudgeted, mode: "set" });
+      normalizeInitialAutoContributionsForYear(year);
     } else {
       const res = await promptForm("Edit Sinking Fund", [
-        { key:"name", label:"Name", type:"text", value: cat.name },
-        { key:"goal", label:"Goal", type:"money", value: moneyToInput(cat.goal || 0) }
+        { key: "name", label: "Name", type: "text", value: cat.name },
+        { key: "goal", label: "Goal", type: "money", value: moneyToInput(cat.goal || 0) },
       ]);
       if (!res) return;
 
@@ -696,6 +741,7 @@ async function editCategory(type, id){
 
       // Ensure carry-forward / default initial exists (safe)
       ensureSinkingFundCarryForward(year, id);
+      normalizeInitialAutoContributionsForYear(year);
     }
   }
 
@@ -703,43 +749,40 @@ async function editCategory(type, id){
   render();
 }
 
-function deleteCategory(type, id){
+function deleteCategory(type, id) {
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const label = (type === "monthly") ? "monthly" : "annual";
+  const label = type === "monthly" ? "monthly" : "annual";
   if (!confirm(`Delete this ${label} category? Existing expenses will move to "${EXTRA_NAME}".`)) return;
 
-  if (type === "monthly"){
-    (b.expenses || []).forEach(ex => {
-      if (ex.type === "monthly" && ex.categoryId === id){
-        ex.categoryId = EXTRA_ID;
-      }
+  if (type === "monthly") {
+    (b.expenses || []).forEach((ex) => {
+      if (ex.type === "monthly" && ex.categoryId === id) ex.categoryId = EXTRA_ID;
     });
-    b.monthlyCategories = (b.monthlyCategories || []).filter(c => c.id !== id);
+    b.monthlyCategories = (b.monthlyCategories || []).filter((c) => c.id !== id);
 
-    if (expanded.type === "monthly" && expanded.id === id) expanded = {type:null, id:null};
-
+    if (expanded.type === "monthly" && expanded.id === id) expanded = { type: null, id: null };
   } else {
-    const year = currentMonthKey.slice(0,4);
+    const year = currentMonthKey.slice(0, 4);
 
     // Move annual expenses for this year to Extra; delete contributions (they don't map to Extra)
     Object.entries(state.budgets).forEach(([mk, mb]) => {
       if (!mk.startsWith(year + "-")) return;
 
-      (mb.expenses || []).forEach(ex => {
-        if (ex.type === "annual" && ex.categoryId === id){
-          ex.categoryId = EXTRA_ID;
-        }
+      (mb.expenses || []).forEach((ex) => {
+        if (ex.type === "annual" && ex.categoryId === id) ex.categoryId = EXTRA_ID;
       });
 
-      mb.contributions = (mb.contributions || []).filter(c => c.categoryId !== id);
-      mb.annualCategories = (mb.annualCategories || []).filter(c => c.id !== id);
+      mb.contributions = (mb.contributions || []).filter((c) => c.categoryId !== id);
+      mb.annualCategories = (mb.annualCategories || []).filter((c) => c.id !== id);
     });
 
-    if ((expanded.type === "annual_budget" || expanded.type === "sinking_fund") && expanded.id === id){
-      expanded = {type:null, id:null};
+    if ((expanded.type === "annual_budget" || expanded.type === "sinking_fund") && expanded.id === id) {
+      expanded = { type: null, id: null };
     }
+
+    normalizeInitialAutoContributionsForYear(year);
   }
 
   saveState();
@@ -747,9 +790,9 @@ function deleteCategory(type, id){
 }
 
 // -------------------- Expense modal --------------------
-function openExpenseModal(prefill){
+function openExpenseModal(prefill) {
   const b = getBudget(currentMonthKey);
-  if (!b){
+  if (!b) {
     alert("Create this month budget first.");
     return;
   }
@@ -757,23 +800,23 @@ function openExpenseModal(prefill){
   refreshExpenseCategoryDropdown();
 
   // If no categories exist, block adding expenses (Extra is not selectable)
-  if (expCategory.options.length === 0){
+  if (!expCategory || expCategory.options.length === 0) {
     alert("Create at least one category first.");
     return;
   }
 
   const editing = Boolean(prefill?.id);
-  expenseModalTitle.textContent = editing ? "Edit Expense" : "Add Expense";
+  if (expenseModalTitle) expenseModalTitle.textContent = editing ? "Edit Expense" : "Add Expense";
 
-  expVendor.value = prefill.vendor ?? "";
-  expItem.value = prefill.item ?? "";
-  expAmount.value = (prefill.amount != null) ? moneyToInput(prefill.amount) : "";
-  expDate.value = prefill.dateISO ?? todayISO();
-  expNote.value = prefill.note ?? "";
+  if (expVendor) expVendor.value = prefill.vendor ?? "";
+  if (expItem) expItem.value = prefill.item ?? "";
+  if (expAmount) expAmount.value = prefill.amount != null ? moneyToInput(prefill.amount) : "";
+  if (expDate) expDate.value = prefill.dateISO ?? todayISO();
+  if (expNote) expNote.value = prefill.note ?? "";
 
-  if (prefill?.type && prefill?.categoryId && prefill.categoryId !== EXTRA_ID){
+  if (prefill?.type && prefill?.categoryId && prefill.categoryId !== EXTRA_ID) {
     const key = `${prefill.type}:${prefill.categoryId}`;
-    const exists = Array.from(expCategory.options).some(o => o.value === key);
+    const exists = Array.from(expCategory.options).some((o) => o.value === key);
     if (exists) expCategory.value = key;
     else expCategory.selectedIndex = 0;
   } else {
@@ -782,56 +825,56 @@ function openExpenseModal(prefill){
 
   expenseModal.dataset.editingId = prefill.id || "";
   openModal(expenseModal);
-  expVendor.focus();
+  expVendor?.focus();
 }
 
-function refreshExpenseCategoryDropdown(){
+function refreshExpenseCategoryDropdown() {
   const b = getBudget(currentMonthKey);
-  if (!b) return;
+  if (!b || !expCategory) return;
 
   const opts = [];
 
   // Monthly categories (exclude Extra)
-  (b.monthlyCategories || []).forEach(c => {
-    opts.push({ value:`monthly:${c.id}`, label:`(Monthly) ${c.name}` });
+  (b.monthlyCategories || []).forEach((c) => {
+    opts.push({ value: `monthly:${c.id}`, label: `(Monthly) ${c.name}` });
   });
 
   // Annual categories (exclude Extra)
-  (b.annualCategories || []).forEach(c => {
-    opts.push({ value:`annual:${c.id}`, label:`(Annual) ${c.name}` });
+  (b.annualCategories || []).forEach((c) => {
+    opts.push({ value: `annual:${c.id}`, label: `(Annual) ${c.name}` });
   });
 
-  expCategory.innerHTML = opts.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join("");
+  expCategory.innerHTML = opts.map((o) => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join("");
 }
 
-function saveExpense({ keepOpen }){
+function saveExpense({ keepOpen }) {
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const vendor = (expVendor.value || "").trim();
-  const item = (expItem.value || "").trim();
-  const amount = parseMoney(expAmount.value);
-  const dateISO = expDate.value || todayISO();
-  const note = (expNote.value || "").trim();
+  const vendor = (expVendor?.value || "").trim();
+  const item = (expItem?.value || "").trim();
+  const amount = parseMoney(expAmount?.value);
+  const dateISO = expDate?.value || todayISO();
+  const note = (expNote?.value || "").trim();
 
-  if (!amount || amount === 0){
+  if (!amount || amount === 0) {
     alert("Amount must be greater than 0.");
     return;
   }
 
-  if (!expCategory.value){
+  if (!expCategory?.value) {
     alert("Pick a category (Extra is not allowed).");
     return;
   }
 
   const [type, categoryId] = expCategory.value.split(":");
-  if (!type || !categoryId || categoryId === EXTRA_ID){
+  if (!type || !categoryId || categoryId === EXTRA_ID) {
     alert("Pick a valid category (Extra is not allowed).");
     return;
   }
 
-  const editingId = expenseModal.dataset.editingId || "";
-  const existing = editingId ? (b.expenses || []).find(e => e.id === editingId) : null;
+  const editingId = expenseModal?.dataset?.editingId || "";
+  const existing = editingId ? (b.expenses || []).find((e) => e.id === editingId) : null;
 
   const record = {
     id: existing ? existing.id : uid(),
@@ -841,7 +884,7 @@ function saveExpense({ keepOpen }){
     item,
     amount,
     dateISO,
-    note
+    note,
   };
 
   b.expenses = b.expenses || [];
@@ -851,29 +894,37 @@ function saveExpense({ keepOpen }){
   saveState();
   render();
 
-  if (keepOpen){
-    expenseModal.dataset.editingId = "";
-    expVendor.value = "";
-    expItem.value = "";
-    expAmount.value = "";
-    expNote.value = "";
-    expVendor.focus();
+  if (keepOpen) {
+    if (expenseModal) expenseModal.dataset.editingId = "";
+    if (expVendor) expVendor.value = "";
+    if (expItem) expItem.value = "";
+    if (expAmount) expAmount.value = "";
+    if (expNote) expNote.value = "";
+    expVendor?.focus();
   } else {
     closeModal(expenseModal);
   }
 }
 
 // -------------------- Expense cards --------------------
-function bindExpenseCardActions(container){
-  container.querySelectorAll("[data-del-exp]").forEach(btn => {
-    btn.addEventListener("click", (e) => { e.stopPropagation(); deleteExpense(btn.dataset.delExp); });
+function bindExpenseCardActions(container) {
+  if (!container) return;
+
+  container.querySelectorAll("[data-del-exp]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteExpense(btn.dataset.delExp);
+    });
   });
-  container.querySelectorAll("[data-edit-exp]").forEach(btn => {
-    btn.addEventListener("click", (e) => { e.stopPropagation(); editExpense(btn.dataset.editExp); });
+  container.querySelectorAll("[data-edit-exp]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      editExpense(btn.dataset.editExp);
+    });
   });
 }
 
-function inlineExpenseCardHtml(ex){
+function inlineExpenseCardHtml(ex) {
   const title = `${escapeHtml(ex.vendor || "")}${ex.item ? " • " + escapeHtml(ex.item) : ""}`.trim() || "(No vendor/item)";
   const note = ex.note ? escapeHtml(ex.note) : "";
 
@@ -895,11 +946,11 @@ function inlineExpenseCardHtml(ex){
   `;
 }
 
-function editExpense(expId){
+function editExpense(expId) {
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const ex = (b.expenses || []).find(e => e.id === expId);
+  const ex = (b.expenses || []).find((e) => e.id === expId);
   if (!ex) return;
 
   openExpenseModal({
@@ -910,15 +961,15 @@ function editExpense(expId){
     item: ex.item,
     amount: ex.amount,
     dateISO: ex.dateISO,
-    note: ex.note
+    note: ex.note,
   });
 }
 
-function deleteExpense(expId){
+function deleteExpense(expId) {
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const idx = (b.expenses || []).findIndex(e => e.id === expId);
+  const idx = (b.expenses || []).findIndex((e) => e.id === expId);
   if (idx === -1) return;
 
   if (!confirm("Delete this expense?")) return;
@@ -929,22 +980,22 @@ function deleteExpense(expId){
 }
 
 // -------------------- Contributions --------------------
-async function addContribution(catId){
+async function addContribution(catId) {
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const cat = (b.annualCategories || []).find(c => c.id === catId);
+  const cat = (b.annualCategories || []).find((c) => c.id === catId);
   if (!cat) return;
 
   const res = await promptForm("Add Contribution", [
-    { key:"amount", label:"Amount", type:"money", placeholder:"0.00" },
-    { key:"dateISO", label:"Date", type:"date", value: todayISO() },
-    { key:"note", label:"Note", type:"text", placeholder:"Optional" }
+    { key: "amount", label: "Amount", type: "money", placeholder: "0.00" },
+    { key: "dateISO", label: "Date", type: "date", value: todayISO() },
+    { key: "note", label: "Note", type: "text", placeholder: "Optional" },
   ]);
   if (!res) return;
 
   const amt = parseMoney(res.amount);
-  if (!amt || amt === 0){
+  if (!amt || amt === 0) {
     alert("Amount must be greater than 0.");
     return;
   }
@@ -956,28 +1007,36 @@ async function addContribution(catId){
     amount: amt,
     dateISO: res.dateISO || todayISO(),
     note: (res.note || "").trim(),
-    kind: "manual"
+    kind: "manual",
   });
 
   // Keep carry-forward sane (safe)
-  if (cat.kind === "sinking_fund"){
-    ensureSinkingFundCarryForward(currentMonthKey.slice(0,4), catId);
+  if (cat.kind === "sinking_fund") {
+    ensureSinkingFundCarryForward(currentMonthKey.slice(0, 4), catId);
   }
 
   saveState();
   render();
 }
 
-function bindContributionActions(container){
-  container.querySelectorAll("[data-del-contrib]").forEach(btn => {
-    btn.addEventListener("click", (e) => { e.stopPropagation(); deleteContribution(btn.dataset.delContrib); });
+function bindContributionActions(container) {
+  if (!container) return;
+
+  container.querySelectorAll("[data-del-contrib]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteContribution(btn.dataset.delContrib);
+    });
   });
-  container.querySelectorAll("[data-edit-contrib]").forEach(btn => {
-    btn.addEventListener("click", (e) => { e.stopPropagation(); editContribution(btn.dataset.editContrib); });
+  container.querySelectorAll("[data-edit-contrib]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      editContribution(btn.dataset.editContrib);
+    });
   });
 }
 
-function inlineContributionCardHtml(c){
+function inlineContributionCardHtml(c) {
   const note = c.note ? escapeHtml(c.note) : "";
   const isAuto = c.kind === "initial";
 
@@ -999,33 +1058,33 @@ function inlineContributionCardHtml(c){
   `;
 }
 
-function editContribution(contribId){
-  const year = currentMonthKey.slice(0,4);
+function editContribution(contribId) {
+  const year = currentMonthKey.slice(0, 4);
   const found = findContributionInYear(year, contribId);
   if (!found) return;
 
   const { monthKey, rec } = found;
 
-  if (rec.kind === "initial"){
+  if (rec.kind === "initial") {
     alert("Initial (auto) is controlled by Budgeted / carry-forward.");
     return;
   }
 
   promptForm("Edit Contribution", [
-    { key:"amount", label:"Amount", type:"money", value: moneyToInput(rec.amount) },
-    { key:"dateISO", label:"Date", type:"date", value: rec.dateISO || todayISO() },
-    { key:"note", label:"Note", type:"text", value: rec.note || "" }
-  ]).then(res => {
+    { key: "amount", label: "Amount", type: "money", value: moneyToInput(rec.amount) },
+    { key: "dateISO", label: "Date", type: "date", value: rec.dateISO || todayISO() },
+    { key: "note", label: "Note", type: "text", value: rec.note || "" },
+  ]).then((res) => {
     if (!res) return;
 
     const amt = parseMoney(res.amount);
-    if (!amt || amt === 0){
+    if (!amt || amt === 0) {
       alert("Amount must be greater than 0.");
       return;
     }
 
     const mb = getBudget(monthKey);
-    const target = (mb.contributions || []).find(x => x.id === contribId);
+    const target = (mb.contributions || []).find((x) => x.id === contribId);
     if (!target) return;
 
     target.amount = amt;
@@ -1037,14 +1096,14 @@ function editContribution(contribId){
   });
 }
 
-function deleteContribution(contribId){
-  const year = currentMonthKey.slice(0,4);
+function deleteContribution(contribId) {
+  const year = currentMonthKey.slice(0, 4);
   const found = findContributionInYear(year, contribId);
   if (!found) return;
 
   const { monthKey, rec } = found;
 
-  if (rec.kind === "initial"){
+  if (rec.kind === "initial") {
     alert("Initial (auto) cannot be deleted.");
     return;
   }
@@ -1052,57 +1111,57 @@ function deleteContribution(contribId){
   if (!confirm("Delete this contribution?")) return;
 
   const mb = getBudget(monthKey);
-  mb.contributions = (mb.contributions || []).filter(c => c.id !== contribId);
+  mb.contributions = (mb.contributions || []).filter((c) => c.id !== contribId);
 
   saveState();
   render();
 }
 
-function findContributionInYear(year, contribId){
+function findContributionInYear(year, contribId) {
   let out = null;
   Object.entries(state.budgets).forEach(([mk, b]) => {
     if (out) return;
     if (!mk.startsWith(year + "-")) return;
-    const hit = (b.contributions || []).find(c => c.id === contribId);
+    const hit = (b.contributions || []).find((c) => c.id === contribId);
     if (hit) out = { monthKey: mk, rec: hit };
   });
   return out;
 }
 
 // -------------------- Annual aggregation --------------------
-function getYearToDateAnnualLedger(yearStr, categoryId){
+function getYearToDateAnnualLedger(yearStr, categoryId) {
   const expenses = [];
   const contributions = [];
 
   Object.entries(state.budgets).forEach(([mk, b]) => {
     if (!mk.startsWith(yearStr + "-")) return;
 
-    (b.expenses || []).forEach(ex => {
+    (b.expenses || []).forEach((ex) => {
       if (ex.type !== "annual") return;
       if (ex.categoryId !== categoryId) return;
       expenses.push(ex);
     });
 
-    (b.contributions || []).forEach(c => {
+    (b.contributions || []).forEach((c) => {
       if (c.categoryId !== categoryId) return;
       contributions.push(c);
     });
   });
 
-  const spentTotal = expenses.reduce((a,x)=> a + (Number(x.amount)||0), 0);
-  const contribTotal = contributions.reduce((a,x)=> a + (Number(x.amount)||0), 0);
+  const spentTotal = expenses.reduce((a, x) => a + (Number(x.amount) || 0), 0);
+  const contribTotal = contributions.reduce((a, x) => a + (Number(x.amount) || 0), 0);
 
   return { expenses, contributions, spentTotal, contribTotal };
 }
 
 // -------------------- Month lifecycle --------------------
-function setMonth(monthKey){
+function setMonth(monthKey) {
   currentMonthKey = monthKey;
   expanded = { type: null, id: null };
   render();
 }
 
-function createBudgetForMonth(monthKey, copyPrev){
+function createBudgetForMonth(monthKey, copyPrev) {
   if (state.budgets[monthKey]) return;
 
   const prevKey = addMonths(monthKey, -1);
@@ -1113,46 +1172,50 @@ function createBudgetForMonth(monthKey, copyPrev){
     monthlyCategories: [],
     annualCategories: [],
     expenses: [],
-    contributions: []
+    contributions: [],
   };
 
-  if (copyPrev && prev){
+  if (copyPrev && prev) {
     base.income = prev.income || 0;
 
-    base.monthlyCategories = (prev.monthlyCategories || []).map(c => ({
+    base.monthlyCategories = (prev.monthlyCategories || []).map((c) => ({
       id: uid(),
       name: c.name,
-      budgeted: c.budgeted || 0
+      budgeted: c.budgeted || 0,
     }));
 
     // annual categories keep SAME ids (critical)
-    base.annualCategories = (prev.annualCategories || []).map(c => ({
+    base.annualCategories = (prev.annualCategories || []).map((c) => ({
       id: c.id,
       kind: c.kind,
       name: c.name,
       budgeted: c.budgeted || 0,
-      goal: c.goal || 0
+      goal: c.goal || 0,
     }));
   }
 
   state.budgets[monthKey] = base;
 
   // January: set annual budget initial(auto)=budgeted; sinking carry-forward
-  const year = monthKey.slice(0,4);
-  const m = monthKey.slice(5,7);
+  const year = monthKey.slice(0, 4);
+  const m = monthKey.slice(5, 7);
 
-  if (m === "01"){
-    (base.annualCategories || []).filter(c => c.kind === "annual_budget").forEach(c => {
-      upsertInitialAutoContribution({ year, categoryId: c.id, amount: c.budgeted || 0, mode:"set" });
-    });
+  if (m === "01") {
+    (base.annualCategories || [])
+      .filter((c) => c.kind === "annual_budget")
+      .forEach((c) => {
+        upsertInitialAutoContribution({ year, categoryId: c.id, amount: c.budgeted || 0, mode: "set" });
+      });
 
-    (base.annualCategories || []).filter(c => c.kind === "sinking_fund").forEach(c => {
-      ensureSinkingFundCarryForward(year, c.id);
-    });
-    // v0.8: if initials were created earlier in another month, move them into January and de-dupe
-    normalizeInitialAutoContributionsForYear(year);
-
+    (base.annualCategories || [])
+      .filter((c) => c.kind === "sinking_fund")
+      .forEach((c) => {
+        ensureSinkingFundCarryForward(year, c.id);
+      });
   }
+
+  // v0.8: if initials were created earlier in another month, move them into January and de-dupe
+  normalizeInitialAutoContributionsForYear(year);
 
   saveState();
 }
@@ -1163,28 +1226,31 @@ function createBudgetForMonth(monthKey, copyPrev){
   - Exactly ONE "initial" contribution per (year, categoryId)
   - If January exists, it must live in January
   - Otherwise it lives in the earliest month in that year
-  - If duplicates exist, keep the best candidate (prefer non-zero, then prefer the preferred month)
+  - If duplicates exist, keep the best candidate:
+      1) prefer non-zero amount
+      2) then prefer preferred month (Jan if exists else earliest)
+      3) otherwise first
 */
-function normalizeInitialAutoContributionsForYear(year){
-  const yearKeys = Object.keys(state.budgets).filter(k => k.startsWith(year + "-")).sort();
+function normalizeInitialAutoContributionsForYear(year) {
+  const yearKeys = Object.keys(state.budgets).filter((k) => k.startsWith(year + "-")).sort();
   if (!yearKeys.length) return false;
 
   const janKey = `${year}-01`;
   const preferredKey = state.budgets[janKey] ? janKey : yearKeys[0];
 
-  // collect all initial contributions across months => { categoryId: [ {mk, idx, rec} ... ] }
+  // collect all initial contributions across months => { categoryId: [ {mk, rec} ... ] }
   const map = new Map();
 
-  yearKeys.forEach(mk => {
+  yearKeys.forEach((mk) => {
     const b = state.budgets[mk];
     const list = b?.contributions || [];
-    for (let i = 0; i < list.length; i++){
+    for (let i = 0; i < list.length; i++) {
       const c = list[i];
       if (c?.kind !== "initial") continue;
       const cid = c.categoryId;
       if (!cid) continue;
       if (!map.has(cid)) map.set(cid, []);
-      map.get(cid).push({ mk, idx: i, rec: c });
+      map.get(cid).push({ mk, rec: c });
     }
   });
 
@@ -1192,29 +1258,35 @@ function normalizeInitialAutoContributionsForYear(year){
 
   let changed = false;
 
-  for (const [categoryId, hits] of map.entries()){
+  for (const [categoryId, hits] of map.entries()) {
     if (!hits.length) continue;
 
-    // Pick best keeper:
-    // 1) prefer in preferredKey
-    // 2) prefer non-zero amount
-    // 3) otherwise first hit
-    let keeper = null;
+    // Pick best keeper by score:
+    // 1) prefer non-zero amount
+    // 2) then prefer preferredKey
+    // 3) otherwise first
+    const keeper = hits
+      .slice()
+      .sort((a, b) => {
+        const aNZ = (Number(a.rec.amount) || 0) !== 0 ? 1 : 0;
+        const bNZ = (Number(b.rec.amount) || 0) !== 0 ? 1 : 0;
+        if (bNZ !== aNZ) return bNZ - aNZ;
 
-    const inPreferred = hits.filter(h => h.mk === preferredKey);
-    const candidates = inPreferred.length ? inPreferred : hits;
+        const aPref = a.mk === preferredKey ? 1 : 0;
+        const bPref = b.mk === preferredKey ? 1 : 0;
+        if (bPref !== aPref) return bPref - aPref;
 
-    const nonZero = candidates.filter(h => (Number(h.rec.amount) || 0) !== 0);
-    keeper = nonZero.length ? nonZero[0] : candidates[0];
+        return 0;
+      })[0];
 
     const keepRec = { ...keeper.rec };
 
     // Remove ALL initial contributions for this category across the year
-    yearKeys.forEach(mk => {
+    yearKeys.forEach((mk) => {
       const b = state.budgets[mk];
       if (!b?.contributions?.length) return;
       const before = b.contributions.length;
-      b.contributions = b.contributions.filter(c => !(c.kind === "initial" && c.categoryId === categoryId));
+      b.contributions = b.contributions.filter((c) => !(c.kind === "initial" && c.categoryId === categoryId));
       if (b.contributions.length !== before) changed = true;
     });
 
@@ -1222,7 +1294,6 @@ function normalizeInitialAutoContributionsForYear(year){
     const pb = state.budgets[preferredKey];
     pb.contributions = pb.contributions || [];
 
-    // Ensure date is Jan 1 for the year (keeps things consistent)
     keepRec.dateISO = `${year}-01-01`;
     keepRec.kind = "initial";
     keepRec.categoryId = categoryId;
@@ -1235,14 +1306,13 @@ function normalizeInitialAutoContributionsForYear(year){
   return changed;
 }
 
-
 // -------------------- Annual initial(auto) helpers --------------------
-function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
+function upsertInitialAutoContribution({ year, categoryId, amount, mode }) {
   const janKey = `${year}-01`;
   let targetKey = state.budgets[janKey] ? janKey : null;
 
-  if (!targetKey){
-    const keys = Object.keys(state.budgets).filter(k => k.startsWith(year + "-")).sort();
+  if (!targetKey) {
+    const keys = Object.keys(state.budgets).filter((k) => k.startsWith(year + "-")).sort();
     targetKey = keys[0] || currentMonthKey;
     if (!state.budgets[targetKey]) return;
   }
@@ -1250,11 +1320,11 @@ function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
   const b = state.budgets[targetKey];
   b.contributions = b.contributions || [];
 
-  const existing = b.contributions.find(c => c.categoryId === categoryId && c.kind === "initial");
+  const existing = b.contributions.find((c) => c.categoryId === categoryId && c.kind === "initial");
   const amt = Number(amount) || 0;
 
-  if (existing){
-    if (mode === "set"){
+  if (existing) {
+    if (mode === "set") {
       existing.amount = amt;
       existing.dateISO = existing.dateISO || `${year}-01-01`;
       existing.note = existing.note || "";
@@ -1268,7 +1338,7 @@ function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
     amount: amt,
     dateISO: `${year}-01-01`,
     note: "",
-    kind: "initial"
+    kind: "initial",
   });
 }
 
@@ -1278,13 +1348,11 @@ function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
   - If there is NO prior-year activity and an initial already exists (e.g., typed starting balance),
     we do NOT overwrite it with 0.
 */
-function ensureSinkingFundCarryForward(year, categoryId){
+function ensureSinkingFundCarryForward(year, categoryId) {
   const prevYear = String(Number(year) - 1);
   const prevLedger = getYearToDateAnnualLedger(prevYear, categoryId);
 
-  const prevEnd =
-    (Number(prevLedger.contribTotal) || 0) -
-    (Number(prevLedger.spentTotal) || 0);
+  const prevEnd = (Number(prevLedger.contribTotal) || 0) - (Number(prevLedger.spentTotal) || 0);
 
   const prevHadActivity =
     (prevLedger.contributions && prevLedger.contributions.length > 0) ||
@@ -1294,24 +1362,20 @@ function ensureSinkingFundCarryForward(year, categoryId){
   // Locate where initial(auto) lives for this year (Jan if exists, else earliest month)
   const janKey = `${year}-01`;
   const keys = Object.keys(state.budgets)
-    .filter(k => k.startsWith(year + "-"))
+    .filter((k) => k.startsWith(year + "-"))
     .sort();
 
-  const targetKey = state.budgets[janKey] ? janKey : (keys[0] || null);
+  const targetKey = state.budgets[janKey] ? janKey : keys[0] || null;
   if (!targetKey || !state.budgets[targetKey]) return;
 
   const tb = state.budgets[targetKey];
   tb.contributions = tb.contributions || [];
 
-  const existingInitial = tb.contributions.find(
-    c => c.categoryId === categoryId && c.kind === "initial"
-  );
+  const existingInitial = tb.contributions.find((c) => c.categoryId === categoryId && c.kind === "initial");
 
   // If there's already an initial and no prior-year activity, leave it alone
   // (this preserves the user-entered starting balance).
-  if (existingInitial && !prevHadActivity) {
-    return;
-  }
+  if (existingInitial && !prevHadActivity) return;
 
   // Otherwise, use prior-year ending balance (or 0 if somehow no activity but no initial existed)
   const amountToUse = prevHadActivity ? prevEnd : 0;
@@ -1320,75 +1384,76 @@ function ensureSinkingFundCarryForward(year, categoryId){
     year,
     categoryId,
     amount: amountToUse,
-    mode: "set"
+    mode: "set",
   });
+
+  // Re-normalize (in case initial lived elsewhere)
+  normalizeInitialAutoContributionsForYear(year);
 }
 
 // -------------------- Annual category propagation --------------------
-function propagateAnnualCategoryToYear(year, cat){
+function propagateAnnualCategoryToYear(year, cat) {
   Object.entries(state.budgets).forEach(([mk, b]) => {
     if (!mk.startsWith(year + "-")) return;
     b.annualCategories = b.annualCategories || [];
-    const exists = b.annualCategories.some(x => x.id === cat.id);
+    const exists = b.annualCategories.some((x) => x.id === cat.id);
     if (!exists) b.annualCategories.push({ ...cat });
   });
 }
 
-function updateAnnualCategoryAcrossYear(year, id, mutator){
+function updateAnnualCategoryAcrossYear(year, id, mutator) {
   Object.entries(state.budgets).forEach(([mk, b]) => {
     if (!mk.startsWith(year + "-")) return;
-    const cat = (b.annualCategories || []).find(c => c.id === id);
+    const cat = (b.annualCategories || []).find((c) => c.id === id);
     if (cat) mutator(cat);
   });
 }
 
-function syncAnnualCategoriesAcrossYear(year){
-  const keys = Object.keys(state.budgets).filter(k => k.startsWith(year + "-")).sort();
+function syncAnnualCategoriesAcrossYear(year) {
+  const keys = Object.keys(state.budgets).filter((k) => k.startsWith(year + "-")).sort();
   if (!keys.length) return;
 
   let source = null;
-  for (const k of keys){
+  for (const k of keys) {
     const b = state.budgets[k];
-    if ((b.annualCategories || []).length){
+    if ((b.annualCategories || []).length) {
       source = b.annualCategories;
       break;
     }
   }
   if (!source) return;
 
-  keys.forEach(k => {
+  keys.forEach((k) => {
     const b = state.budgets[k];
     b.annualCategories = b.annualCategories || [];
-    source.forEach(sc => {
-      const exists = b.annualCategories.some(x => x.id === sc.id);
+    source.forEach((sc) => {
+      const exists = b.annualCategories.some((x) => x.id === sc.id);
       if (!exists) b.annualCategories.push({ ...sc });
     });
   });
 }
 
 // -------------------- Ring helpers (drain by remaining) --------------------
-function remainingPct(leftC, totalC){
-  if (totalC <= 0){
-    return leftC > 0 ? 1 : 0;
-  }
+function remainingPct(leftC, totalC) {
+  if (totalC <= 0) return leftC > 0 ? 1 : 0;
   return clamp01(leftC / totalC);
 }
 
-function remainingTone(leftC, totalC){
+function remainingTone(leftC, totalC) {
   if (totalC > 0 && leftC < 0) return "bad";
   const p = remainingPct(leftC, totalC);
   if (p >= 0.65) return "accent";
-  if (p >= 0.20) return "warn";
+  if (p >= 0.2) return "warn";
   return "bad";
 }
 
-function ringStyle(pct, tone){
+function ringStyle(pct, tone) {
   const deg = Math.round(360 * pct);
   const color = tone === "bad" ? "var(--bad)" : tone === "warn" ? "var(--warn)" : "var(--good)";
   return `background: conic-gradient(${color} ${deg}deg, rgba(71,84,103,.18) 0deg);`;
 }
 
-function clamp01(n){
+function clamp01(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
   if (x < 0) return 0;
@@ -1397,61 +1462,74 @@ function clamp01(n){
 }
 
 // -------------------- Prompt modal --------------------
-function promptForm(title, fields){
+function promptForm(title, fields) {
   return new Promise((resolve) => {
+    if (!promptTitle || !promptFields || !promptModal || !promptOkBtn || !promptCancelBtn) {
+      alert("Prompt UI missing in HTML.");
+      resolve(null);
+      return;
+    }
+
     promptTitle.textContent = title;
 
-    promptFields.innerHTML = fields.map(f => {
-      const value = f.value ?? "";
-      const inputId = "pf_" + f.key;
+    promptFields.innerHTML = fields
+      .map((f) => {
+        const value = f.value ?? "";
+        const inputId = "pf_" + f.key;
 
-      if (f.type === "date"){
+        if (f.type === "date") {
+          return `
+            <label class="field field-span-2">
+              <span>${escapeHtml(f.label)}</span>
+              <input class="input" id="${inputId}" type="date" value="${escapeAttr(value)}" />
+            </label>
+          `;
+        }
+
+        if (f.type === "money") {
+          return `
+            <label class="field">
+              <span>${escapeHtml(f.label)}</span>
+              <input class="input input-money" id="${inputId}" inputmode="decimal"
+                     placeholder="${escapeAttr(f.placeholder || "0.00")}"
+                     value="${escapeAttr(value)}" />
+            </label>
+          `;
+        }
+
+        if (f.type === "select") {
+          const opts = (f.options || [])
+            .map(
+              (o) =>
+                `<option value="${escapeAttr(o.value)}" ${
+                  String(o.value) === String(value) ? "selected" : ""
+                }>${escapeHtml(o.label)}</option>`
+            )
+            .join("");
+          return `
+            <label class="field">
+              <span>${escapeHtml(f.label)}</span>
+              <select class="select" id="${inputId}">
+                ${opts}
+              </select>
+            </label>
+          `;
+        }
+
         return `
           <label class="field field-span-2">
             <span>${escapeHtml(f.label)}</span>
-            <input class="input" id="${inputId}" type="date" value="${escapeAttr(value)}" />
-          </label>
-        `;
-      }
-
-      if (f.type === "money"){
-        return `
-          <label class="field">
-            <span>${escapeHtml(f.label)}</span>
-            <input class="input input-money" id="${inputId}" inputmode="decimal"
-                   placeholder="${escapeAttr(f.placeholder||"0.00")}"
+            <input class="input" id="${inputId}" type="text"
+                   placeholder="${escapeAttr(f.placeholder || "")}"
                    value="${escapeAttr(value)}" />
           </label>
         `;
-      }
-
-      if (f.type === "select"){
-        const opts = (f.options || []).map(o =>
-          `<option value="${escapeAttr(o.value)}" ${String(o.value)===String(value)?"selected":""}>${escapeHtml(o.label)}</option>`
-        ).join("");
-        return `
-          <label class="field">
-            <span>${escapeHtml(f.label)}</span>
-            <select class="select" id="${inputId}">
-              ${opts}
-            </select>
-          </label>
-        `;
-      }
-
-      return `
-        <label class="field field-span-2">
-          <span>${escapeHtml(f.label)}</span>
-          <input class="input" id="${inputId}" type="text"
-                 placeholder="${escapeAttr(f.placeholder||"")}"
-                 value="${escapeAttr(value)}" />
-        </label>
-      `;
-    }).join("");
+      })
+      .join("");
 
     const ok = () => {
       const out = {};
-      fields.forEach(f => {
+      fields.forEach((f) => {
         const el = document.getElementById("pf_" + f.key);
         out[f.key] = el ? el.value : "";
       });
@@ -1481,132 +1559,139 @@ function promptForm(title, fields){
 }
 
 // -------------------- Storage / utilities --------------------
-function loadState(){
-  try{
+function loadState() {
+  try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { budgets:{} };
+    if (!raw) return { budgets: {} };
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return { budgets:{} };
+    if (!parsed || typeof parsed !== "object") return { budgets: {} };
     if (!parsed.budgets) parsed.budgets = {};
     return parsed;
   } catch {
-    return { budgets:{} };
+    return { budgets: {} };
   }
 }
 
-function saveState(){
+function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function getBudget(monthKey){
-  return state.budgets[monthKey] || null;
+function getBudget(monthKey) {
+  return state?.budgets?.[monthKey] || null;
 }
 
-function getMonthExpenses(budget, type){
-  return (budget.expenses || []).filter(e => e.type === type);
+function getMonthExpenses(budget, type) {
+  return (budget.expenses || []).filter((e) => e.type === type);
 }
 
-function seedMonthSelect(){
+function seedMonthSelect() {
+  if (!monthSelect || !state) return;
+
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth() - 24, 1);
   const end = new Date(now.getFullYear(), now.getMonth() + 12, 1);
 
   const keys = [];
-  for (let d = new Date(start); d <= end; d = new Date(d.getFullYear(), d.getMonth()+1, 1)){
+  for (let d = new Date(start); d <= end; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
     keys.push(getMonthKey(d));
   }
 
-  Object.keys(state.budgets).forEach(k => { if (!keys.includes(k)) keys.push(k); });
+  Object.keys(state.budgets || {}).forEach((k) => {
+    if (!keys.includes(k)) keys.push(k);
+  });
 
   keys.sort();
-  monthSelect.innerHTML = keys.map(k => `<option value="${k}">${escapeHtml(monthKeyToLabel(k))}</option>`).join("");
+  monthSelect.innerHTML = keys.map((k) => `<option value="${k}">${escapeHtml(monthKeyToLabel(k))}</option>`).join("");
 }
 
-function getMonthKey(date){
+function getMonthKey(date) {
   const y = date.getFullYear();
-  const m = String(date.getMonth()+1).padStart(2,"0");
+  const m = String(date.getMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
 }
 
-function monthKeyToLabel(k){
-  const [y,m] = k.split("-").map(x=>parseInt(x,10));
-  const dt = new Date(y, (m-1), 1);
-  return dt.toLocaleString(undefined, { month:"long", year:"numeric" });
+function monthKeyToLabel(k) {
+  const [y, m] = k.split("-").map((x) => parseInt(x, 10));
+  const dt = new Date(y, m - 1, 1);
+  return dt.toLocaleString(undefined, { month: "long", year: "numeric" });
 }
 
-function addMonths(monthKey, delta){
-  const [y, m] = monthKey.split("-").map(n => parseInt(n,10));
-  const d = new Date(y, m-1 + delta, 1);
+function addMonths(monthKey, delta) {
+  const [y, m] = monthKey.split("-").map((n) => parseInt(n, 10));
+  const d = new Date(y, m - 1 + delta, 1);
   return getMonthKey(d);
 }
 
-function todayISO(){
+function todayISO() {
   const d = new Date();
   const y = d.getFullYear();
-  const m = String(d.getMonth()+1).padStart(2,"0");
-  const day = String(d.getDate()).padStart(2,"0");
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
 
-function uid(){
+function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-function parseMoney(v){
+function parseMoney(v) {
   if (v == null) return 0;
-  const s = String(v).replace(/[^0-9.\-]/g,"");
+  const s = String(v).replace(/[^0-9.\-]/g, "");
   const n = Number(s);
   if (!Number.isFinite(n)) return 0;
   return Math.round(n * 100) / 100;
 }
 
-function toCents(n){
+function toCents(n) {
   const val = Number(n);
   if (!Number.isFinite(val)) return 0;
   return Math.round(val * 100);
 }
 
-function fromCents(c){
+function fromCents(c) {
   return (Number(c) || 0) / 100;
 }
 
-function sumCents(arr){
-  return arr.reduce((a,b)=> a + (Number(b) || 0), 0);
+function sumCents(arr) {
+  return arr.reduce((a, b) => a + (Number(b) || 0), 0);
 }
 
-function fmtMoney(n){
+function fmtMoney(n) {
   const val = Number(n);
   const safe = Number.isFinite(val) ? val : 0;
-  return safe.toLocaleString(undefined, { style:"currency", currency:"USD" });
+  return safe.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
-function fmtMoneyNoCents(n){
+function fmtMoneyNoCents(n) {
   const val = Number(n);
   const safe = Number.isFinite(val) ? val : 0;
   return safe.toLocaleString(undefined, {
-    style:"currency",
-    currency:"USD",
+    style: "currency",
+    currency: "USD",
     minimumFractionDigits: 0,
-    maximumFractionDigits: 0
+    maximumFractionDigits: 0,
   });
 }
 
-function moneyToInput(n){
+function moneyToInput(n) {
   const val = Number(n);
   const safe = Number.isFinite(val) ? val : 0;
-  return (Math.round(safe*100)/100).toFixed(2);
+  return (Math.round(safe * 100) / 100).toFixed(2);
 }
 
-function openModal(el){
+function openModal(el) {
+  if (!el) return;
   el.classList.remove("hidden");
   const backdrop = el.querySelector(".modal-backdrop");
   if (backdrop) backdrop.dataset.close = "true";
 }
-function closeModal(el){
+
+function closeModal(el) {
+  if (!el) return;
   el.classList.add("hidden");
 }
 
-function emptyRow(text){
+function emptyRow(text) {
   return `
     <div class="trow listgrid" style="cursor:default;">
       <div class="cell-muted" style="grid-column:1 / -1;">${escapeHtml(text)}</div>
@@ -1614,28 +1699,30 @@ function emptyRow(text){
   `;
 }
 
-function escapeHtml(str){
+function escapeHtml(str) {
   return String(str ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#39;");
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
-function escapeAttr(str){
-  return escapeHtml(str).replaceAll("\n"," ");
+function escapeAttr(str) {
+  return escapeHtml(str).replaceAll("\n", " ");
 }
 
 // -------------------- Migration (best-effort) --------------------
-function migrateLegacyStateIfNeeded(){
+function migrateLegacyStateIfNeeded() {
+  if (!state) return;
+
   // If v0.8 already has data, do nothing
   if (Object.keys(state.budgets || {}).length) return;
 
   const tryKeys = ["simplespend_v07", "simplespend_v06"];
 
-  for (const key of tryKeys){
-    try{
+  for (const key of tryKeys) {
+    try {
       const raw = localStorage.getItem(key);
       if (!raw) continue;
 
@@ -1644,28 +1731,30 @@ function migrateLegacyStateIfNeeded(){
 
       Object.entries(legacy.budgets).forEach(([mk, b]) => {
         const nb = {
-          income: Number(b.income)||0,
+          income: Number(b.income) || 0,
           monthlyCategories: Array.isArray(b.monthlyCategories) ? b.monthlyCategories : [],
-          annualCategories: Array.isArray(b.annualCategories) ? b.annualCategories.map(c => ({
-            id: c.id,
-            kind: c.kind || "annual_budget",
-            name: c.name || "Unnamed",
-            // v0.6/v0.7 compatibility
-            budgeted: Number(c.target ?? c.budgeted ?? 0) || 0,
-            goal: Number(c.goal ?? 0) || 0
-          })) : [],
+          annualCategories: Array.isArray(b.annualCategories)
+            ? b.annualCategories.map((c) => ({
+                id: c.id,
+                kind: c.kind || "annual_budget",
+                name: c.name || "Unnamed",
+                // v0.6/v0.7 compatibility
+                budgeted: Number(c.target ?? c.budgeted ?? 0) || 0,
+                goal: Number(c.goal ?? 0) || 0,
+              }))
+            : [],
           expenses: Array.isArray(b.expenses) ? b.expenses : [],
           contributions: Array.isArray(b.contributions)
-            ? b.contributions.map(c => ({ ...c, kind: c.kind || "manual" }))
-            : []
+            ? b.contributions.map((c) => ({ ...c, kind: c.kind || "manual" }))
+            : [],
         };
 
         state.budgets[mk] = nb;
       });
 
       // Normalize all years we imported (keeps things sane immediately)
-      const years = new Set(Object.keys(state.budgets).map(mk => mk.slice(0,4)));
-      years.forEach(y => normalizeInitialAutoContributionsForYear(y));
+      const years = new Set(Object.keys(state.budgets).map((mk) => mk.slice(0, 4)));
+      years.forEach((y) => normalizeInitialAutoContributionsForYear(y));
 
       saveState();
       return; // stop after first successful migration
