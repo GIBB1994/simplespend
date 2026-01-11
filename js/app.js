@@ -1,16 +1,19 @@
 /* SimpleSpend v0.7
-  - Annual categories split into:
-      * Annual Budgets (year-scoped, auto initial contribution = Budgeted)
-      * Sinking Funds (year-scoped ledger with carry-forward initial(auto) from prior year ending balance)
-  - Target does NOT participate in math. It is display-only (“Budgeted” for annual budgets, “Goal” for funds).
-  - Category rollups show NO cents.
-  - Rings are FULL when healthy and DRAIN as remaining decreases.
-  - Extra (hidden uncategorized) enforced.
-  - Annual detail shows ALL year entries (not just this month).
-  - Contributions support Edit/Delete (initial(auto) is not directly editable).
+  - Annual items split into:
+      * Annual Budgets (year-scoped, initial(auto)=Budgeted)
+      * Sinking Funds (year-scoped ledger; initial(auto) carries forward at Jan)
+  - Budgeted/Goal are display-only; math uses ledger (contribs - expenses)
+  - Category rollups show NO cents (expenses/contributions keep cents)
+  - Rings are FULL when healthy and DRAIN as remaining decreases
+  - Extra (hidden uncategorized) enforced:
+      * never selectable
+      * appears only when it has expenses
+      * deleting a category moves its expenses to Extra
+  - Annual detail shows ALL year entries (not month-limited)
+  - Contributions support Edit/Delete (initial(auto) is not directly editable)
 */
 
-const APP_FALLBACK_VERSION = "v0.71";
+const APP_FALLBACK_VERSION = "v0.7";
 const STORAGE_KEY = "simplespend_v07";
 
 const EXTRA_ID = "__extra__";
@@ -56,9 +59,10 @@ const closePromptModalBtn = document.getElementById("closePromptModalBtn");
 const promptCancelBtn = document.getElementById("promptCancelBtn");
 const promptOkBtn = document.getElementById("promptOkBtn");
 
-let expanded = { type: null, id: null }; // type: "monthly"|"annual_budget"|"sinking_fund"
-let amountMode = "left"; // "left" or "spent" (global toggle)
+let expanded = { type: null, id: null }; // "monthly" | "annual_budget" | "sinking_fund"
+let amountMode = "left"; // "left" or "spent" (global toggle; not used for sinking funds)
 
+// -------------------- State --------------------
 let state = loadState();
 migrateLegacyStateIfNeeded();
 
@@ -97,9 +101,11 @@ function wireEvents(){
     render();
   });
 
+  addExpenseBtn.addEventListener("click", () => openExpenseModal({}));
+
+  // Income input
   incomeInput.addEventListener("focus", () => incomeInput.select());
   incomeInput.addEventListener("click", () => incomeInput.select());
-
   incomeInput.addEventListener("input", () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
@@ -108,6 +114,7 @@ function wireEvents(){
     renderTotalsOnly();
   });
 
+  // Add monthly category
   addMonthlyCategoryBtn.addEventListener("click", async () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
@@ -120,7 +127,7 @@ function wireEvents(){
 
     b.monthlyCategories.push({
       id: uid(),
-      name: res.name.trim() || "Unnamed",
+      name: (res.name || "").trim() || "Unnamed",
       budgeted: parseMoney(res.budgeted)
     });
 
@@ -128,12 +135,13 @@ function wireEvents(){
     render();
   });
 
+  // Add annual item (Annual Budget or Sinking Fund)
   addAnnualCategoryBtn.addEventListener("click", async () => {
     const b = getBudget(currentMonthKey);
     if (!b) return;
 
     const res = await promptForm("Add Annual Item", [
-      { key:"kind", label:"Type", type:"select", options:[
+      { key:"kind", label:"Type", type:"select", value:"annual_budget", options:[
         { value:"annual_budget", label:"Annual Budget" },
         { value:"sinking_fund", label:"Sinking Fund" }
       ]},
@@ -145,7 +153,7 @@ function wireEvents(){
 
     const kind = (res.kind === "sinking_fund") ? "sinking_fund" : "annual_budget";
     const id = uid();
-    const name = res.name.trim() || "Unnamed";
+    const name = (res.name || "").trim() || "Unnamed";
     const amt = parseMoney(res.amount);
     const start = parseMoney(res.start);
 
@@ -158,30 +166,43 @@ function wireEvents(){
       goal: kind === "sinking_fund" ? amt : 0
     };
 
+    b.annualCategories = b.annualCategories || [];
     b.annualCategories.push(cat);
 
-    // Ensure initial(auto) for this year
     const year = currentMonthKey.slice(0,4);
+
+    // Create/Set initial(auto)
     if (kind === "annual_budget"){
-      upsertInitialAutoContribution({ year, categoryId:id, amount: cat.budgeted, mode:"set" });
+      upsertInitialAutoContribution({
+        year,
+        categoryId: id,
+        amount: cat.budgeted || 0,
+        mode: "set"
+      });
     } else {
-      // fund: starting balance goes into initial(auto) for current year if provided
-      if (start && start !== 0){
-        upsertInitialAutoContribution({ year, categoryId:id, amount: start, mode:"set" });
-      } else {
-        ensureSinkingFundCarryForward(year, id); // creates 0 initial if nothing to carry
-      }
+      // Always create an initial(auto) for this fund in this year.
+      // Use the typed starting balance if non-zero, otherwise seed with 0.
+      const initialAmount = (start != null && start !== 0) ? start : 0;
+
+      upsertInitialAutoContribution({
+        year,
+        categoryId: id,
+        amount: initialAmount,
+        mode: "set"
+      });
+
+      // Ensure carry-forward only adjusts when there is real prior-year activity.
+      ensureSinkingFundCarryForward(year, id);
     }
 
-    // propagate annual categories to other months in this year if they already exist
+    // Best-effort: ensure category exists across all months in this year
     propagateAnnualCategoryToYear(year, cat);
 
     saveState();
     render();
   });
 
-  addExpenseBtn.addEventListener("click", () => openExpenseModal({}));
-
+  // Expense modal close
   closeExpenseModalBtn.addEventListener("click", () => closeModal(expenseModal));
   expenseModal.addEventListener("click", (e) => {
     if (e.target?.dataset?.close === "true") closeModal(expenseModal);
@@ -190,6 +211,7 @@ function wireEvents(){
   saveExpenseBtn.addEventListener("click", () => saveExpense({ keepOpen:false }));
   saveAndAddAnotherBtn.addEventListener("click", () => saveExpense({ keepOpen:true }));
 
+  // Prompt modal close
   promptModal.addEventListener("click", (e) => {
     if (e.target?.dataset?.close === "true") closeModal(promptModal);
   });
@@ -228,12 +250,11 @@ function renderTotalsOnly(){
   if (!b) return;
 
   const incomeC = toCents(b.income);
-
-  const monthlyBudgetedC = sumCents(b.monthlyCategories.map(c => toCents(c.budgeted)));
+  const monthlyBudgetedC = sumCents((b.monthlyCategories || []).map(c => toCents(c.budgeted)));
   const monthlySpentC = sumCents(getMonthExpenses(b, "monthly").map(x => toCents(x.amount)));
 
-  const plannedC = incomeC - monthlyBudgetedC;
-  const leftC = incomeC - monthlySpentC;
+  const plannedC = incomeC - monthlyBudgetedC; // can go negative
+  const leftC = incomeC - monthlySpentC;       // can go negative
 
   plannedRemainingEl.textContent = fmtMoneyNoCents(fromCents(plannedC));
   leftToSpendEl.textContent = fmtMoneyNoCents(fromCents(leftC));
@@ -256,7 +277,7 @@ function renderMonthlyTable(){
   `;
 
   const rows = [];
-  b.monthlyCategories.forEach(c => rows.push({ id:c.id, name:c.name, total:c.budgeted, kind:"normal" }));
+  (b.monthlyCategories || []).forEach(c => rows.push({ id:c.id, name:c.name, total:c.budgeted, kind:"normal" }));
 
   const extraSpentC = sumCents(expenses.filter(e => e.categoryId === EXTRA_ID).map(e => toCents(e.amount)));
   if (extraSpentC !== 0){
@@ -285,6 +306,7 @@ function renderMonthlyTable(){
     // Ring drains as remaining decreases (full when left=total)
     const pctRemain = remainingPct(leftC, totalC);
     const ringColor = remainingTone(leftC, totalC);
+
     const isOpen = expanded.type === "monthly" && expanded.id === cat.id;
 
     html += `
@@ -312,15 +334,9 @@ function renderMonthlyTable(){
             <div class="detail-muted">${monthKeyToLabel(currentMonthKey)} • Monthly</div>
 
             <div class="row row-wrap row-gap">
-              ${cat.kind !== "extra"
-                ? `<button class="btn btn-primary" data-add-exp="monthly:${cat.id}">+ Add Expense</button>`
-                : ``}
-              ${cat.kind !== "extra"
-                ? `<button class="btn btn-secondary" data-edit-cat="monthly:${cat.id}">Edit Category</button>`
-                : ``}
-              ${cat.kind !== "extra"
-                ? `<button class="btn btn-ghost" data-del-cat="monthly:${cat.id}">Delete Category</button>`
-                : ``}
+              ${cat.kind !== "extra" ? `<button class="btn btn-primary" data-add-exp="monthly:${cat.id}">+ Add Expense</button>` : ``}
+              ${cat.kind !== "extra" ? `<button class="btn btn-secondary" data-edit-cat="monthly:${cat.id}">Edit Category</button>` : ``}
+              ${cat.kind !== "extra" ? `<button class="btn btn-ghost" data-del-cat="monthly:${cat.id}">Delete Category</button>` : ``}
             </div>
 
             ${catExpenses.length ? `
@@ -349,8 +365,8 @@ function renderAnnualTables(){
   const b = getBudget(currentMonthKey);
   const year = currentMonthKey.slice(0,4);
 
-  // Ensure carry-forward is applied for sinking funds for this year (best-effort)
-  b.annualCategories
+  // Ensure sinking funds have correct initial(auto) for the year (safe; won't overwrite start balance)
+  (b.annualCategories || [])
     .filter(c => c.kind === "sinking_fund")
     .forEach(c => ensureSinkingFundCarryForward(year, c.id));
 
@@ -362,14 +378,12 @@ function renderAnnualTables(){
     </div>
   `;
 
-  // Annual budgets
-  const budgets = b.annualCategories.filter(c => c.kind === "annual_budget");
+  const budgets = (b.annualCategories || []).filter(c => c.kind === "annual_budget");
   annualBudgetTable.innerHTML = budgets.length
     ? header + budgets.map(cat => annualBudgetRowHtml(cat, year)).join("")
     : header + emptyRow("No annual budgets yet. Add one.");
 
-  // Sinking funds
-  const funds = b.annualCategories.filter(c => c.kind === "sinking_fund");
+  const funds = (b.annualCategories || []).filter(c => c.kind === "sinking_fund");
   sinkingFundTable.innerHTML = funds.length
     ? sinkingHeaderHtml() + funds.map(cat => sinkingFundRowHtml(cat, year)).join("")
     : sinkingHeaderHtml() + emptyRow("No sinking funds yet. Add one.");
@@ -386,6 +400,7 @@ function renderAnnualTables(){
 function annualBudgetRowHtml(cat, year){
   const ytd = getYearToDateAnnualLedger(year, cat.id);
 
+  // Annual budget "total" is contributions (initial(auto)=budgeted plus any extras)
   const totalC = toCents(ytd.contribTotal);
   const spentC = toCents(ytd.spentTotal);
   const leftC = totalC - spentC;
@@ -451,7 +466,7 @@ function annualBudgetRowHtml(cat, year){
                 .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
                 .map(ex => inlineExpenseCardHtml(ex))
                 .join("")}
-            </div>
+              </div>
           ` : `<div class="cell-muted">No expenses yet this year.</div>`}
         </div>
       </div>
@@ -460,7 +475,6 @@ function annualBudgetRowHtml(cat, year){
 }
 
 function sinkingHeaderHtml(){
-  // Sinking funds show balance only, but we keep header shape stable.
   return `
     <div class="thead listgrid">
       <div>Category</div>
@@ -480,9 +494,8 @@ function sinkingFundRowHtml(cat, year){
   const line = `${fmtMoneyNoCents(fromCents(balC))}`;
   const lineClass = balC < 0 ? "negative" : "";
 
-  // Ring for sinking fund: based on goal if goal > 0, otherwise based on "non-negative"
   const goalC = toCents(cat.goal || 0);
-  const pct = goalC > 0 ? clamp01((balC) / goalC) : (balC > 0 ? 1 : 0);
+  const pct = goalC > 0 ? clamp01(balC / goalC) : (balC > 0 ? 1 : 0);
   const ringColor = (balC < 0) ? "bad" : (goalC > 0 && balC >= goalC) ? "accent" : "warn";
   const isOpen = expanded.type === "sinking_fund" && expanded.id === cat.id;
 
@@ -537,7 +550,7 @@ function sinkingFundRowHtml(cat, year){
                 .sort((a,b)=> (a.dateISO||"").localeCompare(b.dateISO||""))
                 .map(ex => inlineExpenseCardHtml(ex))
                 .join("")}
-            </div>
+              </div>
           ` : `<div class="cell-muted">No expenses yet this year.</div>`}
         </div>
       </div>
@@ -547,7 +560,7 @@ function sinkingFundRowHtml(cat, year){
 
 // -------------------- List interactions --------------------
 function bindListInteractions(container){
-  // Row expand/collapse
+  // Expand/collapse rows
   container.querySelectorAll("[data-toggle]").forEach(row => {
     row.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
@@ -557,7 +570,7 @@ function bindListInteractions(container){
     });
   });
 
-  // Amount toggle (global) — only if present
+  // Amount toggle (global) — only if present and enabled
   container.querySelectorAll("[data-toggle-amount]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -567,7 +580,7 @@ function bindListInteractions(container){
     });
   });
 
-  // Add expense from category
+  // Add expense
   container.querySelectorAll("[data-add-exp]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -610,7 +623,7 @@ async function editCategory(type, id){
   if (!b) return;
 
   if (type === "monthly"){
-    const cat = b.monthlyCategories.find(c => c.id === id);
+    const cat = (b.monthlyCategories || []).find(c => c.id === id);
     if (!cat) return;
 
     const res = await promptForm("Edit Monthly Category", [
@@ -619,13 +632,12 @@ async function editCategory(type, id){
     ]);
     if (!res) return;
 
-    cat.name = res.name.trim() || cat.name;
+    cat.name = (res.name || "").trim() || cat.name;
     cat.budgeted = parseMoney(res.budgeted);
 
   } else {
-    // annual edit applies across the whole year for consistency
     const year = currentMonthKey.slice(0,4);
-    const cat = b.annualCategories.find(c => c.id === id);
+    const cat = (b.annualCategories || []).find(c => c.id === id);
     if (!cat) return;
 
     if (cat.kind === "annual_budget"){
@@ -635,7 +647,7 @@ async function editCategory(type, id){
       ]);
       if (!res) return;
 
-      const newName = res.name.trim() || cat.name;
+      const newName = (res.name || "").trim() || cat.name;
       const newBudgeted = parseMoney(res.budgeted);
 
       updateAnnualCategoryAcrossYear(year, id, (c) => {
@@ -643,7 +655,7 @@ async function editCategory(type, id){
         c.budgeted = newBudgeted;
       });
 
-      // Update initial(auto) to match Budgeted
+      // Keep initial(auto) aligned to budgeted
       upsertInitialAutoContribution({ year, categoryId:id, amount: newBudgeted, mode:"set" });
 
     } else {
@@ -653,7 +665,7 @@ async function editCategory(type, id){
       ]);
       if (!res) return;
 
-      const newName = res.name.trim() || cat.name;
+      const newName = (res.name || "").trim() || cat.name;
       const newGoal = parseMoney(res.goal);
 
       updateAnnualCategoryAcrossYear(year, id, (c) => {
@@ -661,7 +673,7 @@ async function editCategory(type, id){
         c.goal = newGoal;
       });
 
-      // ensure carry-forward stays correct
+      // Ensure carry-forward / default initial exists (safe)
       ensureSinkingFundCarryForward(year, id);
     }
   }
@@ -678,40 +690,32 @@ function deleteCategory(type, id){
   if (!confirm(`Delete this ${label} category? Existing expenses will move to "${EXTRA_NAME}".`)) return;
 
   if (type === "monthly"){
-    b.expenses.forEach(ex => {
+    (b.expenses || []).forEach(ex => {
       if (ex.type === "monthly" && ex.categoryId === id){
         ex.categoryId = EXTRA_ID;
       }
     });
-    b.monthlyCategories = b.monthlyCategories.filter(c => c.id !== id);
+    b.monthlyCategories = (b.monthlyCategories || []).filter(c => c.id !== id);
+
+    if (expanded.type === "monthly" && expanded.id === id) expanded = {type:null, id:null};
 
   } else {
     const year = currentMonthKey.slice(0,4);
 
-    // Move ANNUAL expenses for this year to Extra
+    // Move annual expenses for this year to Extra; delete contributions (they don't map to Extra)
     Object.entries(state.budgets).forEach(([mk, mb]) => {
       if (!mk.startsWith(year + "-")) return;
+
       (mb.expenses || []).forEach(ex => {
         if (ex.type === "annual" && ex.categoryId === id){
           ex.categoryId = EXTRA_ID;
         }
       });
-      (mb.contributions || []).forEach(c => {
-        if (c.categoryId === id){
-          // delete contributions for deleted annual item (they can't meaningfully go to Extra)
-          c._deleted = true;
-        }
-      });
-      mb.contributions = (mb.contributions || []).filter(c => !c._deleted);
-    });
 
-    // Remove annual category from all months in the year
-    Object.entries(state.budgets).forEach(([mk, mb]) => {
-      if (!mk.startsWith(year + "-")) return;
+      mb.contributions = (mb.contributions || []).filter(c => c.categoryId !== id);
       mb.annualCategories = (mb.annualCategories || []).filter(c => c.id !== id);
     });
 
-    // If we were expanded, collapse
     if ((expanded.type === "annual_budget" || expanded.type === "sinking_fund") && expanded.id === id){
       expanded = {type:null, id:null};
     }
@@ -750,6 +754,7 @@ function openExpenseModal(prefill){
     const key = `${prefill.type}:${prefill.categoryId}`;
     const exists = Array.from(expCategory.options).some(o => o.value === key);
     if (exists) expCategory.value = key;
+    else expCategory.selectedIndex = 0;
   } else {
     expCategory.selectedIndex = 0;
   }
@@ -766,10 +771,14 @@ function refreshExpenseCategoryDropdown(){
   const opts = [];
 
   // Monthly categories (exclude Extra)
-  b.monthlyCategories.forEach(c => opts.push({ value:`monthly:${c.id}`, label:`(Monthly) ${c.name}` }));
+  (b.monthlyCategories || []).forEach(c => {
+    opts.push({ value:`monthly:${c.id}`, label:`(Monthly) ${c.name}` });
+  });
 
   // Annual categories (exclude Extra)
-  b.annualCategories.forEach(c => opts.push({ value:`annual:${c.id}`, label:`(Annual) ${c.name}` }));
+  (b.annualCategories || []).forEach(c => {
+    opts.push({ value:`annual:${c.id}`, label:`(Annual) ${c.name}` });
+  });
 
   expCategory.innerHTML = opts.map(o => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join("");
 }
@@ -778,11 +787,11 @@ function saveExpense({ keepOpen }){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const vendor = expVendor.value.trim();
-  const item = expItem.value.trim();
+  const vendor = (expVendor.value || "").trim();
+  const item = (expItem.value || "").trim();
   const amount = parseMoney(expAmount.value);
   const dateISO = expDate.value || todayISO();
-  const note = expNote.value.trim();
+  const note = (expNote.value || "").trim();
 
   if (!amount || amount === 0){
     alert("Amount must be greater than 0.");
@@ -800,10 +809,8 @@ function saveExpense({ keepOpen }){
     return;
   }
 
-  // annual expenses are year-scoped in display, but stored per-month;
-  // we’ll still store in the selected month record for simplicity.
   const editingId = expenseModal.dataset.editingId || "";
-  const existing = editingId ? b.expenses.find(e => e.id === editingId) : null;
+  const existing = editingId ? (b.expenses || []).find(e => e.id === editingId) : null;
 
   const record = {
     id: existing ? existing.id : uid(),
@@ -816,6 +823,7 @@ function saveExpense({ keepOpen }){
     note
   };
 
+  b.expenses = b.expenses || [];
   if (existing) Object.assign(existing, record);
   else b.expenses.push(record);
 
@@ -870,7 +878,7 @@ function editExpense(expId){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const ex = b.expenses.find(e => e.id === expId);
+  const ex = (b.expenses || []).find(e => e.id === expId);
   if (!ex) return;
 
   openExpenseModal({
@@ -889,13 +897,12 @@ function deleteExpense(expId){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const idx = b.expenses.findIndex(e => e.id === expId);
+  const idx = (b.expenses || []).findIndex(e => e.id === expId);
   if (idx === -1) return;
 
   if (!confirm("Delete this expense?")) return;
 
   b.expenses.splice(idx, 1);
-
   saveState();
   render();
 }
@@ -905,10 +912,10 @@ async function addContribution(catId){
   const b = getBudget(currentMonthKey);
   if (!b) return;
 
-  const cat = b.annualCategories.find(c => c.id === catId);
+  const cat = (b.annualCategories || []).find(c => c.id === catId);
   if (!cat) return;
 
-  const res = await promptForm(`Add Contribution`, [
+  const res = await promptForm("Add Contribution", [
     { key:"amount", label:"Amount", type:"money", placeholder:"0.00" },
     { key:"dateISO", label:"Date", type:"date", value: todayISO() },
     { key:"note", label:"Note", type:"text", placeholder:"Optional" }
@@ -921,7 +928,6 @@ async function addContribution(catId){
     return;
   }
 
-  // store contribution in this month record; annual views aggregate across year
   b.contributions = b.contributions || [];
   b.contributions.push({
     id: uid(),
@@ -932,7 +938,7 @@ async function addContribution(catId){
     kind: "manual"
   });
 
-  // for sinking funds, keep carry-forward sane
+  // Keep carry-forward sane (safe)
   if (cat.kind === "sinking_fund"){
     ensureSinkingFundCarryForward(currentMonthKey.slice(0,4), catId);
   }
@@ -973,14 +979,12 @@ function inlineContributionCardHtml(c){
 }
 
 function editContribution(contribId){
-  const b = getBudget(currentMonthKey);
-  if (!b) return;
-
   const year = currentMonthKey.slice(0,4);
   const found = findContributionInYear(year, contribId);
   if (!found) return;
 
   const { monthKey, rec } = found;
+
   if (rec.kind === "initial"){
     alert("Initial (auto) is controlled by Budgeted / carry-forward.");
     return;
@@ -992,6 +996,7 @@ function editContribution(contribId){
     { key:"note", label:"Note", type:"text", value: rec.note || "" }
   ]).then(res => {
     if (!res) return;
+
     const amt = parseMoney(res.amount);
     if (!amt || amt === 0){
       alert("Amount must be greater than 0.");
@@ -1043,7 +1048,7 @@ function findContributionInYear(year, contribId){
   return out;
 }
 
-// -------------------- Annual YTD aggregation --------------------
+// -------------------- Annual aggregation --------------------
 function getYearToDateAnnualLedger(yearStr, categoryId){
   const expenses = [];
   const contributions = [];
@@ -1093,7 +1098,7 @@ function createBudgetForMonth(monthKey, copyPrev){
   if (copyPrev && prev){
     base.income = prev.income || 0;
 
-    base.monthlyCategories = prev.monthlyCategories.map(c => ({
+    base.monthlyCategories = (prev.monthlyCategories || []).map(c => ({
       id: uid(),
       name: c.name,
       budgeted: c.budgeted || 0
@@ -1111,18 +1116,16 @@ function createBudgetForMonth(monthKey, copyPrev){
 
   state.budgets[monthKey] = base;
 
-  // If it's January, apply annual budget initial(auto)=budgeted, and sinking carry-forward initial(auto)
+  // January: set annual budget initial(auto)=budgeted; sinking carry-forward
   const year = monthKey.slice(0,4);
   const m = monthKey.slice(5,7);
 
   if (m === "01"){
-    // Annual budgets: ensure initial(auto)=budgeted
-    base.annualCategories.filter(c => c.kind === "annual_budget").forEach(c => {
+    (base.annualCategories || []).filter(c => c.kind === "annual_budget").forEach(c => {
       upsertInitialAutoContribution({ year, categoryId: c.id, amount: c.budgeted || 0, mode:"set" });
     });
 
-    // Sinking funds: carry-forward from prior year ending
-    base.annualCategories.filter(c => c.kind === "sinking_fund").forEach(c => {
+    (base.annualCategories || []).filter(c => c.kind === "sinking_fund").forEach(c => {
       ensureSinkingFundCarryForward(year, c.id);
     });
   }
@@ -1132,17 +1135,13 @@ function createBudgetForMonth(monthKey, copyPrev){
 
 // -------------------- Annual initial(auto) helpers --------------------
 function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
-  // Stored in the January budget if it exists; otherwise stored in the earliest month found for that year; otherwise current month.
   const janKey = `${year}-01`;
   let targetKey = state.budgets[janKey] ? janKey : null;
 
   if (!targetKey){
     const keys = Object.keys(state.budgets).filter(k => k.startsWith(year + "-")).sort();
     targetKey = keys[0] || currentMonthKey;
-    if (!state.budgets[targetKey]){
-      // if current month budget doesn't exist yet, bail
-      return;
-    }
+    if (!state.budgets[targetKey]) return;
   }
 
   const b = state.budgets[targetKey];
@@ -1170,22 +1169,57 @@ function upsertInitialAutoContribution({ year, categoryId, amount, mode }){
   });
 }
 
-
-  function ensureSinkingFundCarryForward(year, categoryId){
+/*
+  Sinking-fund carry-forward:
+  - If there is prior-year activity, this year's initial(auto) = prior-year ending balance.
+  - If there is NO prior-year activity and an initial already exists (e.g., typed starting balance),
+    we do NOT overwrite it with 0.
+*/
+function ensureSinkingFundCarryForward(year, categoryId){
   const prevYear = String(Number(year) - 1);
-
-  // Prior year ending balance:
-  // balance = total contributions - total expenses (for that year)
   const prevLedger = getYearToDateAnnualLedger(prevYear, categoryId);
-  const prevEnd = (Number(prevLedger.contribTotal)||0) - (Number(prevLedger.spentTotal)||0);
 
-  // Set current year initial(auto) to that ending balance.
-  // If prev year doesn't exist yet, this becomes 0.
-  upsertInitialAutoContribution({ year, categoryId, amount: prevEnd, mode:"set" });
+  const prevEnd =
+    (Number(prevLedger.contribTotal) || 0) -
+    (Number(prevLedger.spentTotal) || 0);
+
+  const prevHadActivity =
+    (prevLedger.contributions && prevLedger.contributions.length > 0) ||
+    (prevLedger.expenses && prevLedger.expenses.length > 0) ||
+    prevEnd !== 0;
+
+  // Locate where initial(auto) lives for this year (Jan if exists, else earliest month)
+  const janKey = `${year}-01`;
+  const keys = Object.keys(state.budgets)
+    .filter(k => k.startsWith(year + "-"))
+    .sort();
+
+  const targetKey = state.budgets[janKey] ? janKey : (keys[0] || null);
+  if (!targetKey || !state.budgets[targetKey]) return;
+
+  const tb = state.budgets[targetKey];
+  tb.contributions = tb.contributions || [];
+
+  const existingInitial = tb.contributions.find(
+    c => c.categoryId === categoryId && c.kind === "initial"
+  );
+
+  // If there's already an initial and no prior-year activity, leave it alone
+  // (this preserves the user-entered starting balance).
+  if (existingInitial && !prevHadActivity) {
+    return;
+  }
+
+  // Otherwise, use prior-year ending balance (or 0 if somehow no activity but no initial existed)
+  const amountToUse = prevHadActivity ? prevEnd : 0;
+
+  upsertInitialAutoContribution({
+    year,
+    categoryId,
+    amount: amountToUse,
+    mode: "set"
+  });
 }
-
-
-
 
 // -------------------- Annual category propagation --------------------
 function propagateAnnualCategoryToYear(year, cat){
@@ -1206,7 +1240,6 @@ function updateAnnualCategoryAcrossYear(year, id, mutator){
 }
 
 function syncAnnualCategoriesAcrossYear(year){
-  // pick the "most complete" annualCategories list from any month in this year as source
   const keys = Object.keys(state.budgets).filter(k => k.startsWith(year + "-")).sort();
   if (!keys.length) return;
 
@@ -1220,7 +1253,6 @@ function syncAnnualCategoriesAcrossYear(year){
   }
   if (!source) return;
 
-  // ensure every month has the same set (by id)
   keys.forEach(k => {
     const b = state.budgets[k];
     b.annualCategories = b.annualCategories || [];
@@ -1292,7 +1324,7 @@ function promptForm(title, fields){
 
       if (f.type === "select"){
         const opts = (f.options || []).map(o =>
-          `<option value="${escapeAttr(o.value)}" ${String(o.value)===String(f.value)?"selected":""}>${escapeHtml(o.label)}</option>`
+          `<option value="${escapeAttr(o.value)}" ${String(o.value)===String(value)?"selected":""}>${escapeHtml(o.label)}</option>`
         ).join("");
         return `
           <label class="field">
@@ -1448,8 +1480,12 @@ function fmtMoney(n){
 function fmtMoneyNoCents(n){
   const val = Number(n);
   const safe = Number.isFinite(val) ? val : 0;
-  // US locale already shows negatives as -$50 (not parentheses)
-  return safe.toLocaleString(undefined, { style:"currency", currency:"USD", minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  return safe.toLocaleString(undefined, {
+    style:"currency",
+    currency:"USD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  });
 }
 
 function moneyToInput(n){
@@ -1490,8 +1526,7 @@ function escapeAttr(str){
 
 // -------------------- Migration (best-effort) --------------------
 function migrateLegacyStateIfNeeded(){
-  // If you had v0.6 data, it lived under simplespend_v06.
-  // We'll try to import it once.
+  // If v0.7 already has data, do nothing
   if (Object.keys(state.budgets || {}).length) return;
 
   try{
@@ -1500,9 +1535,6 @@ function migrateLegacyStateIfNeeded(){
     const legacy = JSON.parse(raw);
     if (!legacy?.budgets) return;
 
-    // Bring over month budgets as-is, but:
-    // - remove old annual balance fields if present
-    // - ensure annual categories have kind
     Object.entries(legacy.budgets).forEach(([mk, b]) => {
       const nb = {
         income: Number(b.income)||0,
@@ -1511,6 +1543,7 @@ function migrateLegacyStateIfNeeded(){
           id: c.id,
           kind: c.kind || "annual_budget",
           name: c.name || "Unnamed",
+          // v0.6 used target/balance patterns; map to budgeted/goal display-only
           budgeted: Number(c.target ?? c.budgeted ?? 0) || 0,
           goal: Number(c.goal ?? 0) || 0
         })) : [],
@@ -1518,7 +1551,6 @@ function migrateLegacyStateIfNeeded(){
         contributions: Array.isArray(b.contributions) ? b.contributions.map(c => ({...c, kind: c.kind || "manual"})) : []
       };
 
-      // ensure annual budget initial(auto) exists for each year-month set (only if Jan exists later)
       state.budgets[mk] = nb;
     });
 
