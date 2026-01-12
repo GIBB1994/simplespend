@@ -1,12 +1,11 @@
-/* SimpleSpend v0.9 (AStep 8 — WRITES WIRED)
+/* SimpleSpend v0.9 (AStep 8 — WRITES WIRED + Category modal UI)
   - Supabase is source of truth
-  - AStep 8 implements:
+  - Implements:
       8.1 Create Budget (RPC only)
       8.2 Create Month (+ optional copy prev categories)
-      8.3 Monthly Category CRUD
-      8.4 Monthly Expense CRUD
-  - Annual (8.5/8.6): left as “next file pass” because schema column names weren’t provided here.
-    (Monthly is fully wired and correct; annual wiring needs exact column names to avoid guessing wrong.)
+      8.3 Monthly Category CRUD (uses promptModal, not browser prompt)
+      8.4 Monthly Expense CRUD (uses expense modal)
+  - Annual (8.5/8.6): left as stub (needs exact annual schema to wire safely)
 */
 
 const APP_FALLBACK_VERSION = "v0.9";
@@ -50,7 +49,6 @@ const expNote = document.getElementById("expNote");
 const saveExpenseBtn = document.getElementById("saveExpenseBtn");
 const saveAndAddAnotherBtn = document.getElementById("saveAndAddAnotherBtn");
 
-// Prompt modal (we keep minimal usage; most actions use prompt())
 const promptModal = document.getElementById("promptModal");
 const promptTitle = document.getElementById("promptTitle");
 const promptFields = document.getElementById("promptFields");
@@ -63,7 +61,7 @@ let expanded = { type: null, id: null }; // "monthly" | "annual_budget" | "sinki
 let amountMode = "left"; // global toggle for monthly/annual budgets
 
 // Expense modal state
-let editingExpense = null; // { id, mode: "add"|"edit", type, categoryId }
+let editingExpense = null; // { id, mode: "add"|"edit" }
 
 // -------------------- App state --------------------
 let state = null;
@@ -118,8 +116,7 @@ async function bootReads() {
       return;
     }
 
-    await fetchMonthBundle({ budgetId: bid, monthKey: currentMonthKey });
-    hydrateLocalMonthFromSupabase({ monthKey: currentMonthKey });
+    await refreshCurrentMonth();
   } catch (err) {
     console.error("Boot reads failed:", err);
     setTopError(err?.message || String(err));
@@ -178,7 +175,6 @@ async function fetchMonthBundle({ budgetId, monthKey }) {
   return { month: ss.month, categories: ss.monthlyCategories, expenses: ss.monthlyExpenses };
 }
 
-// Map Supabase rows into the existing view model the UI expects
 function hydrateLocalMonthFromSupabase({ monthKey }) {
   if (!state) state = { budgets: {} };
   if (!state.budgets) state.budgets = {};
@@ -200,7 +196,7 @@ function hydrateLocalMonthFromSupabase({ monthKey }) {
         budgeted: fromCents(c.budgeted_cents || 0),
         sort_order: Number(c.sort_order) || 0,
       })),
-    annualCategories: [], // annual wired later (needs exact schema)
+    annualCategories: [],
     expenses: (ss.monthlyExpenses || []).map((e) => ({
       id: e.id,
       type: "monthly",
@@ -211,13 +207,13 @@ function hydrateLocalMonthFromSupabase({ monthKey }) {
       dateISO: e.expense_date || "",
       note: e.note || "",
     })),
-    contributions: [], // annual wired later (needs exact schema)
+    contributions: [],
   };
 
   state.budgets[monthKey] = b;
 }
 
-// -------------------- Supabase WRITES (AStep 8.1–8.4) --------------------
+// -------------------- Supabase WRITES (8.1–8.4) --------------------
 async function refreshCurrentMonth() {
   const bid = ss.activeBudgetId;
   if (!bid) return;
@@ -244,7 +240,6 @@ async function createMonth({ monthKey, copyPrev }) {
   const bid = ss.activeBudgetId;
   if (!bid) throw new Error("No active budget selected.");
 
-  // Insert month with income (default 0)
   const income = parseMoney(incomeInput?.value || "0");
   const { error: insErr } = await supa.from("months").insert({
     budget_id: bid,
@@ -252,8 +247,6 @@ async function createMonth({ monthKey, copyPrev }) {
     income_cents: toCents(income),
   });
   if (insErr) throw insErr;
-
-  // Trigger should auto-create Extra category row
 
   if (copyPrev) {
     const prevKey = addMonths(monthKey, -1);
@@ -307,30 +300,101 @@ async function updateIncome() {
   render();
 }
 
+// -------------------- Category modal helper --------------------
+function openPromptModal({ title, fields }) {
+  return new Promise((resolve) => {
+    if (!promptModal || !promptTitle || !promptFields || !promptOkBtn || !promptCancelBtn) {
+      const out = {};
+      for (const f of fields) out[f.key] = prompt(f.label, f.value ?? "") ?? "";
+      return resolve({ ok: true, values: out });
+    }
+
+    promptTitle.textContent = title || "Enter values";
+
+    promptFields.innerHTML = fields
+      .map((f) => {
+        const span = f.span2 ? " field-span-2" : "";
+        const type = f.type || "text";
+        const val = f.value ?? "";
+        const ph = f.placeholder ?? "";
+        return `
+          <label class="field${span}">
+            <span>${escapeHtml(f.label)}</span>
+            <input
+              class="input"
+              id="pm_${escapeAttr(f.key)}"
+              type="${escapeAttr(type)}"
+              ${f.money ? 'inputmode="decimal"' : ""}
+              value="${escapeAttr(val)}"
+              placeholder="${escapeAttr(ph)}"
+            />
+          </label>
+        `;
+      })
+      .join("");
+
+    openModal(promptModal);
+
+    const first = promptFields.querySelector("input");
+    if (first) setTimeout(() => first.focus(), 0);
+
+    const cleanup = () => {
+      promptOkBtn.onclick = null;
+      promptCancelBtn.onclick = null;
+      if (closePromptModalBtn) closePromptModalBtn.onclick = null;
+    };
+
+    const cancel = () => {
+      cleanup();
+      closeModal(promptModal);
+      resolve({ ok: false, values: null });
+    };
+
+    promptCancelBtn.onclick = cancel;
+    if (closePromptModalBtn) closePromptModalBtn.onclick = cancel;
+
+    promptOkBtn.onclick = () => {
+      const values = {};
+      for (const f of fields) {
+        const el = document.getElementById(`pm_${f.key}`);
+        values[f.key] = (el?.value ?? "").trim();
+      }
+      cleanup();
+      closeModal(promptModal);
+      resolve({ ok: true, values });
+    };
+  });
+}
+
 async function addMonthlyCategory() {
   const bid = ss.activeBudgetId;
   if (!bid) throw new Error("No active budget selected.");
   const b = getBudget(currentMonthKey);
   if (!b) throw new Error("Create the month first.");
 
-  const name = (prompt("Category name:") || "").trim();
+  const r = await openPromptModal({
+    title: "Add Monthly Category",
+    fields: [
+      { key: "name", label: "Category name", value: "", span2: true },
+      { key: "budgeted", label: "Budgeted", value: "0.00", money: true },
+    ],
+  });
+
+  if (!r.ok) return;
+
+  const name = (r.values.name || "").trim();
   if (!name) return;
 
-  const budgeted = parseMoney(prompt("Budgeted amount (e.g. 250):", "0") || "0");
+  const budgeted = parseMoney(r.values.budgeted || "0");
 
-  // Generate category_key (stable-ish)
   let keyBase = slugKey(name);
   if (!keyBase || keyBase === EXTRA_ID) keyBase = "cat";
   let key = keyBase;
 
-  // Ensure not colliding with existing keys in THIS month
   const existing = new Set((ss.monthlyCategories || []).map((c) => c.category_key));
   let i = 2;
-  while (existing.has(key) || key === EXTRA_ID) {
-    key = `${keyBase}_${i++}`;
-  }
+  while (existing.has(key) || key === EXTRA_ID) key = `${keyBase}_${i++}`;
 
-  // pick sort_order at end
   const maxSort = Math.max(
     0,
     ...(ss.monthlyCategories || []).filter((c) => !c.is_extra).map((c) => Number(c.sort_order) || 0)
@@ -361,12 +425,20 @@ async function editMonthlyCategory(catId) {
   const cur = (ss.monthlyCategories || []).find((c) => c.category_key === catId);
   if (!cur) return;
 
-  const name = (prompt("Category name:", cur.name || "") || "").trim();
+  const r = await openPromptModal({
+    title: "Edit Monthly Category",
+    fields: [
+      { key: "name", label: "Category name", value: cur.name || "", span2: true },
+      { key: "budgeted", label: "Budgeted", value: fromCents(cur.budgeted_cents || 0).toFixed(2), money: true },
+    ],
+  });
+
+  if (!r.ok) return;
+
+  const name = (r.values.name || "").trim();
   if (!name) return;
 
-  const budgeted = parseMoney(
-    prompt("Budgeted amount:", fromCents(cur.budgeted_cents || 0).toFixed(2)) || "0"
-  );
+  const budgeted = parseMoney(r.values.budgeted || "0");
 
   const { error } = await supa
     .from("monthly_categories")
@@ -402,6 +474,7 @@ async function deleteMonthlyCategory(catId) {
   render();
 }
 
+// -------------------- Expense writes --------------------
 async function insertExpense(payload) {
   const bid = ss.activeBudgetId;
   if (!bid) throw new Error("No active budget selected.");
@@ -506,7 +579,6 @@ function wireEvents() {
   incomeInput?.addEventListener("focus", () => incomeInput.select());
   incomeInput?.addEventListener("click", () => incomeInput.select());
 
-  // Commit income on blur (simple + avoids spamming writes)
   incomeInput?.addEventListener("blur", async () => {
     try {
       const b = getBudget(currentMonthKey);
@@ -531,7 +603,6 @@ function wireEvents() {
     alert("Annual wiring is next (needs exact annual_items/annual_ledger column names).");
   });
 
-  // Expense modal close
   closeExpenseModalBtn?.addEventListener("click", () => closeModal(expenseModal));
   expenseModal?.addEventListener("click", (e) => {
     if (e.target?.dataset?.close === "true") closeModal(expenseModal);
@@ -554,13 +625,6 @@ function wireEvents() {
       alert(e?.message || e);
     }
   });
-
-  // Prompt modal close (unused mostly)
-  promptModal?.addEventListener("click", (e) => {
-    if (e.target?.dataset?.close === "true") closeModal(promptModal);
-  });
-  closePromptModalBtn?.addEventListener("click", () => closeModal(promptModal));
-  promptCancelBtn?.addEventListener("click", () => closeModal(promptModal));
 }
 
 async function setMonth(monthKey) {
@@ -572,8 +636,8 @@ async function setMonth(monthKey) {
   const bid = ss.activeBudgetId;
   if (bid) {
     try {
-      await fetchMonthBundle({ budgetId: bid, monthKey });
-      hydrateLocalMonthFromSupabase({ monthKey });
+      await refreshCurrentMonth();
+      seedMonthSelect();
     } catch (err) {
       console.error("Month read failed:", err);
       setTopError(err?.message || String(err));
@@ -622,7 +686,6 @@ function render() {
 }
 
 function renderTopBudgetState() {
-  // Use authError area as top status + CTA (cheap and effective)
   const ae = document.getElementById("authError");
   if (!ae) return;
 
@@ -636,17 +699,12 @@ function renderTopBudgetState() {
     document.getElementById("btnCreateBudget")?.addEventListener("click", async () => {
       try {
         await createBudgetViaRpc();
-        // Once budget exists, clear message
         setTopError("");
       } catch (e) {
         setTopError(e?.message || String(e));
         alert(e?.message || e);
       }
     });
-  } else {
-    // Clear unless we have an actual error message already set
-    // (We keep whatever text is already there if it isn't our empty string)
-    // If you want a budget selector later, this is where it goes.
   }
 }
 
@@ -654,7 +712,6 @@ function setTopError(msg) {
   const ae = document.getElementById("authError");
   if (!ae) return;
   if (!msg) {
-    // only clear if not showing create-budget CTA
     if (ss.budgets.length) ae.textContent = "";
     return;
   }
@@ -682,7 +739,6 @@ function renderTotalsOnly() {
   }
 }
 
-// -------------------- Monthly Table --------------------
 function renderMonthlyTable() {
   const b = getBudget(currentMonthKey);
   if (!b || !monthlyTable) return;
@@ -799,7 +855,6 @@ function renderMonthlyTable() {
   bindExpenseCardActions(monthlyTable);
 }
 
-// -------------------- Annual Tables (not guessed) --------------------
 function renderAnnualTables() {
   const header = `
     <div class="thead listgrid">
@@ -827,7 +882,6 @@ function sinkingHeaderHtml() {
   `;
 }
 
-// -------------------- List interactions --------------------
 function bindListInteractions(container) {
   if (!container) return;
 
@@ -886,8 +940,7 @@ function bindListInteractions(container) {
   });
 }
 
-// -------------------- Expense modal --------------------
-function openExpenseModal({ mode, type = "monthly", categoryId = null, expense = null } = {}) {
+function openExpenseModal({ mode, categoryId = null, expense = null } = {}) {
   if (!expenseModal) return;
 
   editingExpense = null;
@@ -895,7 +948,6 @@ function openExpenseModal({ mode, type = "monthly", categoryId = null, expense =
   const b = getBudget(currentMonthKey);
   if (!b) return alert("Create the month first.");
 
-  // Fill dropdown from current month categories + (optionally) allow extra only for editing existing extra expense
   refreshExpenseCategoryDropdown();
 
   if (mode === "edit" && expense) {
@@ -915,7 +967,6 @@ function openExpenseModal({ mode, type = "monthly", categoryId = null, expense =
     expAmount.value = "";
     expDate.value = todayISO();
     expNote.value = "";
-    // preselect category if provided
     if (categoryId && expCategory.querySelector(`option[value="${cssEscape(categoryId)}"]`)) {
       expCategory.value = categoryId;
     } else {
@@ -978,7 +1029,6 @@ function refreshExpenseCategoryDropdown() {
     .join("");
 }
 
-// -------------------- Expense cards --------------------
 function bindExpenseCardActions(container) {
   if (!container) return;
 
@@ -1035,7 +1085,6 @@ function remainingPct(leftC, totalC) {
   if (totalC <= 0) return leftC > 0 ? 1 : 0;
   return clamp01(leftC / totalC);
 }
-
 function remainingTone(leftC, totalC) {
   if (totalC > 0 && leftC < 0) return "bad";
   const p = remainingPct(leftC, totalC);
@@ -1043,13 +1092,11 @@ function remainingTone(leftC, totalC) {
   if (p >= 0.2) return "warn";
   return "bad";
 }
-
 function ringStyle(pct, tone) {
   const deg = Math.round(360 * pct);
   const color = tone === "bad" ? "var(--bad)" : tone === "warn" ? "var(--warn)" : "var(--good)";
   return `background: conic-gradient(${color} ${deg}deg, rgba(71,84,103,.18) 0deg);`;
 }
-
 function clamp01(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
@@ -1058,15 +1105,13 @@ function clamp01(n) {
   return x;
 }
 
-// -------------------- Storage / utilities --------------------
+// -------------------- Utilities --------------------
 function getBudget(monthKey) {
   return state?.budgets?.[monthKey] || null;
 }
-
 function getMonthExpenses(budget, type) {
   return (budget.expenses || []).filter((e) => e.type === type);
 }
-
 function seedMonthSelect() {
   if (!monthSelect) return;
 
@@ -1086,25 +1131,21 @@ function seedMonthSelect() {
   keys.sort();
   monthSelect.innerHTML = keys.map((k) => `<option value="${k}">${escapeHtml(monthKeyToLabel(k))}</option>`).join("");
 }
-
 function getMonthKey(date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   return `${y}-${m}`;
 }
-
 function monthKeyToLabel(k) {
   const [y, m] = k.split("-").map((x) => parseInt(x, 10));
   const dt = new Date(y, m - 1, 1);
   return dt.toLocaleString(undefined, { month: "long", year: "numeric" });
 }
-
 function addMonths(monthKey, delta) {
   const [y, m] = monthKey.split("-").map((n) => parseInt(n, 10));
   const d = new Date(y, m - 1 + delta, 1);
   return getMonthKey(d);
 }
-
 function todayISO() {
   const d = new Date();
   const y = d.getFullYear();
@@ -1112,7 +1153,6 @@ function todayISO() {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
-
 function parseMoney(v) {
   if (v == null) return 0;
   const s = String(v).replace(/[^0-9.\-]/g, "");
@@ -1120,27 +1160,22 @@ function parseMoney(v) {
   if (!Number.isFinite(n)) return 0;
   return Math.round(n * 100) / 100;
 }
-
 function toCents(n) {
   const val = Number(n);
   if (!Number.isFinite(val)) return 0;
   return Math.round(val * 100);
 }
-
 function fromCents(c) {
   return (Number(c) || 0) / 100;
 }
-
 function sumCents(arr) {
   return arr.reduce((a, b) => a + (Number(b) || 0), 0);
 }
-
 function fmtMoney(n) {
   const val = Number(n);
   const safe = Number.isFinite(val) ? val : 0;
   return safe.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
-
 function fmtMoneyNoCents(n) {
   const val = Number(n);
   const safe = Number.isFinite(val) ? val : 0;
@@ -1151,25 +1186,21 @@ function fmtMoneyNoCents(n) {
     maximumFractionDigits: 0,
   });
 }
-
 function moneyToInput(n) {
   const val = Number(n);
   const safe = Number.isFinite(val) ? val : 0;
   return (Math.round(safe * 100) / 100).toFixed(2);
 }
-
 function openModal(el) {
   if (!el) return;
   el.classList.remove("hidden");
   const backdrop = el.querySelector(".modal-backdrop");
   if (backdrop) backdrop.dataset.close = "true";
 }
-
 function closeModal(el) {
   if (!el) return;
   el.classList.add("hidden");
 }
-
 function emptyRow(text) {
   return `
     <div class="trow listgrid" style="cursor:default;">
@@ -1177,7 +1208,6 @@ function emptyRow(text) {
     </div>
   `;
 }
-
 function escapeHtml(str) {
   return String(str ?? "")
     .replaceAll("&", "&amp;")
@@ -1186,16 +1216,12 @@ function escapeHtml(str) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 }
-
 function escapeAttr(str) {
   return escapeHtml(str).replaceAll("\n", " ");
 }
-
 function cssEscape(s) {
-  // minimal for option lookup
   return String(s).replace(/"/g, '\\"');
 }
-
 function slugKey(name) {
   return String(name || "")
     .trim()
