@@ -1,325 +1,162 @@
 # SimpleSpend
 
-SimpleSpend is a **manual, month-first** budgeting app inspired by EveryDollar.
-It prioritizes **clarity, speed, and control** over automation.
-
-This README is the **source of truth** for behavior + direction. If code disagrees with this, **the code is wrong**.
+Manual, fast, **month-first** budgeting app with a clean mobile-style UI. Data lives in Supabase. Supports monthly budgeting + annual planning (annual budgets + sinking funds).
 
 ---
 
-## Product Philosophy (Locked)
+## What this app does
 
-- **Manual-first budgeting**  
-  No bank sync, no auto-import. The user explicitly records spending.
+### Monthly (month-first)
+- Navigate months with ◀ / ▶ or the month dropdown.
+- If a month doesn’t exist yet:
+  - You can create it and optionally **copy the previous month’s categories + budgeted amounts**.
+- Tracks:
+  - **Income**
+  - **Planned Remaining** = Income − Monthly Budgeted
+  - **Left to Spend** = Income − Monthly Spent
+- Monthly categories:
+  - Add / edit / delete categories
+  - Add / edit / delete expenses via modal (not browser prompt)
+- “Extra” category:
+  - Exists as a hidden backend bucket (`extra99`)
+  - **Never selectable**
+  - Shows in UI only if it has expenses
+  - If you delete a monthly category, its expenses get reassigned to **Extra**
 
-- **Simple > fancy**  
-  Flat lists. Clear numbers. Minimal friction.
+### Annual (restored to v0.73 behavior)
+Annual is split into two sections:
 
-- **Month-first**  
-  The monthly view is the home and mental model.
+#### 1) Annual Budgets (year-scoped)
+- You create these for the current year.
+- The “Budgeted” amount is **display-only**.
+- Math is ledger-driven:
+  - The app ensures an automatic **Initial (auto)** contribution exists on Jan 1 for that year.
+  - Left = Contributions − Expenses (for that year)
+- Annual detail view shows:
+  - Contributions (year)
+  - Expenses (year)
+- Initial entries are **locked** (not editable / deletable).
 
----
-
-## Repository & Architecture (Locked)
-
-- **Hub repo:** `app-home`  
-  Launcher only. Links to individual apps.
-
-- **App repo:** `app-simplespend`  
-  Standalone repository.
-
-- **Frontend:** Static site (GitHub Pages / PWA)
-- **Backend (future):** Supabase (Postgres + RLS)
-- **Auth (future):** Supabase Auth (real auth, not a pin/local-only lock)
-- **Monorepo:** ❌ Not used
-
----
-
-## Phases (Locked)
-
-### Phase 1
-- Single-user experience
-- Multi-device sync (future)
-- Schema must be **multi-user ready**
-
-### Phase 2
-- Multi-user budgets (sharing with spouse/others)
-- Potentially multiple budgets per user
-
----
-
-## Core Model (Locked)
-
-### Month Model
-- Budgets are keyed by month as `YYYY-MM` (e.g. `2026-01`).
-- Navigation:
-  - Month dropdown
-  - Previous / next month buttons
-- Month creation can optionally:
-  - Copy **monthly categories + budgeted amounts** from previous month
-- Monthly budgets are independent objects.
-
-### Income & Totals (Monthly)
-- Each month has **one income number**.
-
-Calculations:
-- **Planned Remaining** = `Income − sum(Monthly Budgeted)`  
-  - Can be negative (display negative in **red**)
-- **Left to Spend** = `Income − sum(Monthly Spent)`  
-  - Can be negative (display negative in **red**)
+#### 2) Sinking Funds (year-aware via rollover snapshot)
+- Sinking funds are long-term funds with:
+  - **Goal**
+  - **Starting Balance**
+- To prevent “snowball” contribution behavior across years:
+  - Each Jan 1, the app creates a snapshot entry:
+    - **“Initial YYYY value”**
+  - That snapshot equals the previous year’s ending balance.
+  - The year’s running balance uses the snapshot as the starting point.
+- Initial snapshot entries are **locked** (not editable / deletable).
 
 ---
 
-## Monthly Categories (Locked)
-
-User can:
-- Add / remove categories
-- Set name + budgeted amount
-
-Monthly categories affect:
-- Planned Remaining
-- Left to Spend
-
-### Category List UI (Locked Direction)
-Each category row shows:
-- Category name
-- **Left / Total** (default)
-- Progress ring indicator
-
-Toggle:
-- Tap the amount area to toggle:
-  - **Left / Total**
-  - **Spent / Total**
-
-No clutter:
-- Edit/delete must not clutter rows  
-  Actions live in expanded detail.
-
-### Money Display Rules
-- Category rollups should show **no cents** (e.g. `$50`, `-$50`)
-- Expense line-items can show cents.
+## Tech stack
+- Front-end: plain HTML/CSS/JS (no React)
+- Auth + DB: Supabase
+- Hosted as a static site (GitHub Pages supported)
 
 ---
 
-## Expenses (Locked)
+## Repo layout (typical)
+/
+index.html
+VERSION.txt
+manifest.json
+sw.js
+/css
+styles.css
+/js
+main.js
+auth.js
+app.js
+config.public.js
+config.js (dev-only, not committed)
 
-Required fields:
-- Vendor
-- Item (short label)
-- Amount
-- Date
-- Category
-- Note (optional)
-
-Behavior:
-- Expenses must have a **valid category**
-- Clicking a category expands and shows expenses **inline under that category**
-- Expenses are scoped to:
-  - the month (monthly categories)
-  - or the annual subsystem rules below (annual budgets)
-
----
-
-## Extra Bucket (Hidden Uncategorized) — Non-Negotiable
-
-Special hidden category:
-- ID: `__extra__`
-- Name: `Extra`
-
-Rules:
-- ❌ Never selectable in Add Expense
-- ✅ Appears **only when it has expenses**
-- Deleting a category:
-  - existing expenses move to **Extra**
-- ✅ Auto-hides when empty
-
-Purpose:
-- Nothing ever “disappears”
-- Forces cleanup without data loss
 
 ---
 
-## Annual System (Locked Decision)
+## Boot + Config behavior
+`index.html` tries to load:
+1. `./js/config.js` (local dev, not committed)
+2. If missing, falls back to `./js/config.public.js` (committed safe config)
 
-Annual behavior was clarified and split into **two types** that share the same mechanics but differ in scope and UI.
+Then it loads `./js/main.js` as a module.
 
-### Annual Types
-
-#### 1) Annual Budget (Year-scoped, resets yearly)
-Use when:
-- You want a yearly budget that does **not** roll over into next year.
-
-Scope:
-- Ledger is per-year (e.g. 2026 only)
-- Annual expenses/contributions do **not** roll from `Dec 2026 → Jan 2027`
-
-Copy behavior:
-- New year should **recreate** the annual budget items by copying:
-  - Name
-  - Target
-  - Initial
-- New year does **not** copy:
-  - Expenses
-  - Contributions
-
-Row UI:
-- Show **Target directly underneath the category name** (no drill-down needed)
-- Row amount display:
-  - **Left / TotalAvailable**
-  - no cents
-
-**Annual Budget Math (authoritative):**
-- Target = expected yearly budget (static; does not change)
-- Initial = starting amount available for that year
-- Contributions = “small wins” added without changing Target
-- Spent = sum of annual-budget expenses within that year
-
-Formulas:
-- **TotalAvailable** = `Target + Initial + sum(Contributions)`
-- **Left** = `TotalAvailable − Spent`
-
-Ring behavior:
-- Ring should be **full when healthy** and **drain as remaining decreases**
-- Progress basis for annual budgets:
-  - `Left / TotalAvailable` (clamped 0..1)
-
-Expanded detail:
-- Show **all annual budget expenses for the year (YTD)** (not just the month)
-- Show **all annual budget contributions for the year (YTD)**
-- Contributions must support **Edit** and **Delete**
-- Expenses must support **Edit** and **Delete**
-- Negative money shows as `-$50` (not parentheses)
-
-#### 2) Sinking Fund (All-time rollover)
-Use when:
-- You want a fund that carries over across years.
-
-Scope:
-- Ledger is all-time (global)
-- Continues across year boundaries
-
-Row UI:
-- Row shows **Balance only** (no cents)
-- Target shown under the name as “Goal”
-
-**Sinking Fund Math (authoritative):**
-- Target = goal (static)
-- Initial = starting fund amount
-- Contributions = added to fund
-- Spent = fund expenses (all-time)
-
-Formulas:
-- **Funded** = `Initial + sum(Contributions)`
-- **Balance** = `Funded − Spent`
-
-Expanded detail:
-- Show **all contributions all-time**
-- Show **all expenses all-time**
-- Contributions must support **Edit** and **Delete**
-- Expenses must support **Edit** and **Delete**
-- Negative money shows as `-$50`
-
-> NOTE: Annual Budgets and Sinking Funds share the same “ledger idea” but differ in whether they reset yearly.
-
-### Critical Rule (Hard Non-Negotiable)
-- **Creating an annual category must NOT create a monthly category.**
-- Monthly categories are created only via “Add Monthly Category”.
+If config fails to load:
+- App root is hidden
+- Auth gate stays visible
+- Error message shows what’s missing
 
 ---
 
-## UI / UX Rules (Locked)
+## Environments (DEV vs PROD)
+- **DEV**: create `js/config.js` locally with your Supabase URL + anon key.
+- **PROD**: commit `js/config.public.js` with the production URL + anon key.
 
-- Medium theme (not dark)
-- Larger readable font
-- Responsive (no overlapping on mobile)
-- No instructional clutter (“tap to show spent” style microcopy should be removed)
-- Stable column alignment: headers and rows must share the same grid layout
+> Keep secrets out of the client. Supabase anon key is expected to be public; security is enforced with RLS policies.
 
 ---
 
-## Versioning (Locked)
+## Supabase tables (expected)
+This app expects these tables to exist (names are exact):
 
-- Version shown subtly in UI
-- Read from `VERSION.txt`
-- Fallback version supported in JS
+### Core
+- `budgets`
+- `months`
+- `monthly_categories`
+- `monthly_expenses`
 
----
-
-## PWA / Service Worker (Locked Direction)
-
-Goal:
-- Avoid “stale deployments” from cached JS/CSS.
-
-Requirements:
-- Service worker cache must include:
-  - `./index.html`
-  - `./css/styles.css`
-  - `./js/app.js`
-  - `./manifest.json`
-  - icons
-  - `./VERSION.txt`
-- Bumping `CACHE_NAME` should trigger refresh.
-- Recommended strategy:
-  - **Network-first** for HTML (so deployments show quickly)
-  - **Cache-first** for static assets (fast loads)
+### Annual
+- `annual_items`
+- `annual_ledger`
 
 ---
 
-## Backend & Security Direction (Future, Locked)
-
-- Data persisted in Supabase (no long-term reliance on localStorage)
-- Budgets scoped by `budget_id`
-
-Security:
-- Supabase **Row Level Security is mandatory**
-- All access scoped by:
-  - user membership to `budget_id`
-- Even in Phase 1, schema must support future sharing
+## Important backend rules / assumptions
+- The backend has an “Extra” category key:
+  - `extra99`
+- Extra is enforced:
+  - Cannot be selected in UI
+  - Used as reassignment target when a category is deleted
 
 ---
 
-## Reporting (Required, Future Phase)
-
-Reporting page is required.
-Must support:
-- Annual rollups
-- Spending trends
-- All expenses retained for reporting
+## Versioning
+- UI version badge reads `VERSION.txt` (cache-busting recommended)
+- App fallback version constant exists in JS (used if `VERSION.txt` can’t be read)
 
 ---
 
-## Regression Checklist (Always Test)
+## Testing checklist (quick)
+Monthly:
+1. Create month (with and without copy previous)
+2. Add/edit/delete monthly categories
+3. Add/edit/delete expenses
+4. Delete a category and confirm expenses move to Extra
 
-1. Monthly overspend shows **negative + red**
-2. Planned Remaining can go negative
-3. Extra bucket:
-   - Never selectable
-   - Shows only when populated
-   - Receives expenses on category delete
-   - Auto-hides when empty
-4. Annual system:
-   - Creating annual does NOT create monthly
-   - Annual Budget is **year-scoped** (no rollover)
-   - Annual Budget totals are **YTD**, month switching does not reset
-   - Sinking Funds **roll over all-time**
-   - Contributions are editable
-   - Category rows show Target underneath without drilling in
-5. Month switching never loses data
-6. Buttons and modals continue to work
-7. Money formatting:
-   - Category rollups show **no cents**
-   - Negatives show as `-$50` (not parentheses)
+Annual Budgets:
+1. Add annual budget for the year
+2. Confirm an **Initial (auto)** contribution exists (locked)
+3. Add annual expense + contribution
+4. Confirm Left updates correctly
+
+Sinking Funds:
+1. Create sinking fund with starting balance
+2. Add contributions + expenses
+3. Switch to a new year (January) and confirm a snapshot entry appears:
+   - “Initial YYYY value”
+4. Confirm balance does **not** double-count old contributions
 
 ---
 
-## Status / Next Steps
+## Notes
+- This app is intentionally “manual-first”:
+  - Fast entry
+  - Minimal automation
+  - Clean UI over feature bloat
+- If behavior looks off, verify:
+  - RLS policies
+  - table names / column names
+  - correct Supabase config loaded (DEV vs PROD)
 
-Current:
-- Frontend logic v0.7 baseline
-- Annual Budgets + Sinking Funds structure agreed
 
-Next steps:
-1. Version bump discipline + SW cache discipline
-2. Supabase Auth
-3. Database schema + RLS (multi-user ready)
-4. Reporting page
