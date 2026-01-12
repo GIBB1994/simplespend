@@ -1,14 +1,11 @@
-/* SimpleSpend v0.9 (AStep 8 — WRITES WIRED + Category modal UI)
+/* SimpleSpend v0.95+
   - Supabase is source of truth
-  - Implements:
-      8.1 Create Budget (RPC only)
-      8.2 Create Month (+ optional copy prev categories)
-      8.3 Monthly Category CRUD (uses promptModal, not browser prompt)
-      8.4 Monthly Expense CRUD (uses expense modal)
-  - Annual (8.5/8.6): left as stub (needs exact annual schema to wire safely)
+  - Monthly: wired
+  - Annual: restored to v0.73 behavior + UI patterns
+  - Sinking fund rollover: Jan snapshot entry "Initial YYYY value" so contributions don't snowball forever
 */
 
-const APP_FALLBACK_VERSION = "v0.9";
+const APP_FALLBACK_VERSION = "v0.95";
 const STORAGE_KEY = "simplespend_v09";
 
 // Backend truth
@@ -82,7 +79,7 @@ let ss = {
   monthlyCategories: [],
   monthlyExpenses: [],
 
-  // annual bundle (current budget + current year context)
+  // annual bundle (all items + all ledger for this budget)
   annualItems: [],
   annualLedger: [],
 };
@@ -202,7 +199,6 @@ function hydrateLocalMonthFromSupabase({ monthKey }) {
         budgeted: fromCents(c.budgeted_cents || 0),
         sort_order: Number(c.sort_order) || 0,
       })),
-    annualCategories: (state.budgets[monthKey]?.annualCategories || []),
     expenses: (ss.monthlyExpenses || []).map((e) => ({
       id: e.id,
       type: "monthly",
@@ -213,10 +209,8 @@ function hydrateLocalMonthFromSupabase({ monthKey }) {
       dateISO: e.expense_date || "",
       note: e.note || "",
     })),
-    contributions: (state.budgets[monthKey]?.contributions || []),
   };
 
-  // Persist view-model for this month
   state.budgets[monthKey] = b;
 }
 
@@ -228,15 +222,14 @@ async function refreshCurrentMonth() {
   await fetchMonthBundle({ budgetId: bid, monthKey: currentMonthKey });
   hydrateLocalMonthFromSupabase({ monthKey: currentMonthKey });
 
-  // annual (year-context from current month)
+  // annual (all items + all ledger; filtered per-year in view)
   const year = yearFromMonthKey(currentMonthKey);
-  await fetchAnnualBundle({ budgetId: bid, year });
-  hydrateAnnualIntoState({ monthKey: currentMonthKey, year });
+  await fetchAnnualBundle({ budgetId: bid });
+  await ensureAnnualAutosForYear({ budgetId: bid, year }); // v0.73 behavior: ensure initial autos exist
 }
 
 // -------------------- Annual READS --------------------
-async function fetchAnnualBundle({ budgetId, year }) {
-  // items: all for this budget (we filter by type/year in JS)
+async function fetchAnnualBundle({ budgetId }) {
   const items = await supa
     .from("annual_items")
     .select("id,budget_id,type,year,name,target_cents,initial_cents,created_at,updated_at")
@@ -246,7 +239,6 @@ async function fetchAnnualBundle({ budgetId, year }) {
   if (items.error) throw items.error;
   ss.annualItems = items.data || [];
 
-  // ledger: all for this budget (filter per-item + per-year in JS)
   const led = await supa
     .from("annual_ledger")
     .select("id,budget_id,annual_item_id,entry_type,amount_cents,entry_date,vendor,item,note,created_at,updated_at")
@@ -257,28 +249,62 @@ async function fetchAnnualBundle({ budgetId, year }) {
   ss.annualLedger = led.data || [];
 }
 
-function hydrateAnnualIntoState({ monthKey, year }) {
-  const b = state?.budgets?.[monthKey];
-  if (!b) return;
-
-  const view = computeAnnualView({ year });
-
-  // These are only used by annual rendering (monthly rendering ignores them)
-  b.annualCategories = view.annualBudgets;
-  b.contributions = view.sinkingFunds; // legacy name in UI; actually sinking funds
+// -------------------- Annual behavior (v0.73 restored) --------------------
+function isAutoInitialEntry(e) {
+  const note = String(e?.note || "").trim().toLowerCase();
+  // We treat any note that starts with "initial" as an auto/rollover snapshot.
+  return note.startsWith("initial");
 }
 
-// -------------------- Annual VIEW (computed) --------------------
-function computeAnnualView({ year }) {
+function initialLabelForYear(year) {
+  return `Initial ${year} value`;
+}
+
+// For sinking funds, we want "current-year ledger" = from the most recent Initial <year> snapshot onward
+function getSinkingWindowForYear({ itemId, year }) {
+  const entries = (ss.annualLedger || [])
+    .filter((e) => e.annual_item_id === itemId)
+    .slice()
+    .sort((a, b) => String(a.entry_date || "").localeCompare(String(b.entry_date || "")));
+
+  const jan1 = `${year}-01-01`;
+
+  // Find snapshot entry with entry_date == Jan 1 of this year and note starts with Initial
+  const snapshot = entries.find((e) => e.entry_date === jan1 && isAutoInitialEntry(e));
+
+  // If snapshot exists, ignore everything before it for this year's running sums/display
+  if (snapshot) {
+    const idx = entries.findIndex((x) => x.id === snapshot.id);
+    const window = idx >= 0 ? entries.slice(idx) : entries;
+    return { windowEntries: window, hasSnapshot: true, snapshotEntry: snapshot };
+  }
+
+  // If no snapshot, we fallback to using all-time ledger but STILL compute like v0.73 "balance = initial + contribs - spent"
+  // without snowballing via repeated snapshots (since there isn't one).
+  return { windowEntries: entries, hasSnapshot: false, snapshotEntry: null };
+}
+
+function splitAnnualEntries(entries) {
+  const expenses = [];
+  const contributions = [];
+  for (const e of entries || []) {
+    const t = String(e.entry_type || "").toLowerCase();
+    if (t === "expense") expenses.push(e);
+    else if (t === "contribution") contributions.push(e);
+  }
+  return { expenses, contributions };
+}
+
+// Annual budgets (year-scoped): v0.73 behavior
+// - Show Budgeted under name (budgeted = annual_items.target_cents)
+// - TotalAvailable = sum(contributions for year) (includes "Initial (auto)" seeded to budgeted)
+// - Left = TotalAvailable - Spent
+function computeAnnualViewV073({ year }) {
   const items = ss.annualItems || [];
   const ledger = ss.annualLedger || [];
 
-  const byItem = new Map();
-  for (const it of items) byItem.set(it.id, it);
-
   const entriesByItem = new Map();
   for (const e of ledger) {
-    if (!byItem.has(e.annual_item_id)) continue;
     const arr = entriesByItem.get(e.annual_item_id) || [];
     arr.push(e);
     entriesByItem.set(e.annual_item_id, arr);
@@ -288,59 +314,61 @@ function computeAnnualView({ year }) {
   const sinkingFunds = [];
 
   for (const it of items) {
-    const type = (it.type || "").trim();
-    const itYear = it.year == null ? null : Number(it.year);
-    const initialC = Number(it.initial_cents) || 0;
-    const targetC = Number(it.target_cents) || 0;
-
-    const allEntries = (entriesByItem.get(it.id) || []).slice().sort((a, b) =>
-      String(a.entry_date || "").localeCompare(String(b.entry_date || ""))
-    );
-
-    const yearEntries =
-      type === "annual_budget"
-        ? allEntries.filter((x) => yearFromISODate(x.entry_date) === year)
-        : allEntries;
-
-    const spentC = sumCents(
-      yearEntries
-        .filter((x) => (x.entry_type || "").toLowerCase() === "expense")
-        .map((x) => Number(x.amount_cents) || 0)
-    );
-
-    const contribC = sumCents(
-      yearEntries
-        .filter((x) => (x.entry_type || "").toLowerCase() === "contribution")
-        .map((x) => Number(x.amount_cents) || 0)
-    );
-
-    const balanceC = initialC + contribC - spentC;
+    const type = String(it.type || "").trim();
+    const itemId = it.id;
 
     if (type === "annual_budget") {
-      if (itYear !== year) continue;
+      const itYear = Number(it.year);
+      if (!Number.isFinite(itYear) || itYear !== year) continue;
 
-      const leftC = targetC - spentC;
+      const all = (entriesByItem.get(itemId) || [])
+        .slice()
+        .sort((a, b) => String(a.entry_date || "").localeCompare(String(b.entry_date || "")));
+
+      const yearEntries = all.filter((x) => yearFromISODate(x.entry_date) === year);
+      const { expenses, contributions } = splitAnnualEntries(yearEntries);
+
+      const spentC = sumCents(expenses.map((x) => Number(x.amount_cents) || 0));
+      const totalAvailC = sumCents(contributions.map((x) => Number(x.amount_cents) || 0));
+      const leftC = totalAvailC - spentC;
 
       annualBudgets.push({
-        id: it.id,
-        name: it.name,
-        year: itYear,
-        target_cents: targetC,
-        initial_cents: initialC,
+        id: itemId,
+        name: it.name || "Unnamed",
+        year,
+        budgeted_cents: Number(it.target_cents) || 0, // display-only
+        contributions,
+        expenses,
+        total_available_cents: totalAvailC,
         spent_cents: spentC,
         left_cents: leftC,
-        // show ONLY relevant year entries
-        entries: yearEntries,
       });
-    } else if (type === "sinking_fund") {
-      // year must be null for sinking funds per your constraints
+    }
+
+    if (type === "sinking_fund") {
+      const goalC = Number(it.target_cents) || 0;
+
+      const { windowEntries, hasSnapshot, snapshotEntry } = getSinkingWindowForYear({ itemId, year });
+      const { expenses, contributions } = splitAnnualEntries(windowEntries);
+
+      const spentC = sumCents(expenses.map((x) => Number(x.amount_cents) || 0));
+      const contribC = sumCents(contributions.map((x) => Number(x.amount_cents) || 0));
+
+      // If there's no snapshot, we use item.initial_cents as base (v0.73 "starting balance")
+      const baseInitialC = hasSnapshot ? 0 : (Number(it.initial_cents) || 0);
+
+      const balanceC = baseInitialC + contribC - spentC;
+
       sinkingFunds.push({
-        id: it.id,
-        name: it.name,
-        target_cents: targetC,
-        initial_cents: initialC,
+        id: itemId,
+        name: it.name || "Unnamed",
+        goal_cents: goalC,
+        base_initial_cents: baseInitialC,
         balance_cents: balanceC,
-        entries: allEntries,
+        has_snapshot: hasSnapshot,
+        snapshot_entry: snapshotEntry,
+        contributions,
+        expenses,
       });
     }
   }
@@ -348,58 +376,190 @@ function computeAnnualView({ year }) {
   return { annualBudgets, sinkingFunds };
 }
 
-// -------------------- Annual WRITES --------------------
+// Ensure Annual Budget "Initial (auto)" exists each year = budgeted (target_cents)
+async function ensureAnnualBudgetInitial({ budgetId, year, item }) {
+  const itemId = item.id;
+  const jan1 = `${year}-01-01`;
+
+  const existing = (ss.annualLedger || []).some(
+    (e) =>
+      e.annual_item_id === itemId &&
+      String(e.entry_type || "").toLowerCase() === "contribution" &&
+      e.entry_date === jan1 &&
+      isAutoInitialEntry(e)
+  );
+  if (existing) return;
+
+  const budgetedC = Number(item.target_cents) || 0;
+
+  const { error } = await supa.from("annual_ledger").insert({
+    budget_id: budgetId,
+    annual_item_id: itemId,
+    entry_type: "contribution",
+    amount_cents: budgetedC,
+    entry_date: jan1,
+    vendor: null,
+    item: null,
+    note: "Initial (auto)",
+  });
+
+  if (error) throw error;
+
+  // Refresh local ledger cache (cheap approach: refetch annual bundle)
+  await fetchAnnualBundle({ budgetId });
+}
+
+// Ensure Sinking Fund snapshot exists for year (Jan 1) and equals prior-year ending balance,
+// so contributions don't keep adding up across years.
+async function ensureSinkingFundSnapshot({ budgetId, year, item }) {
+  const itemId = item.id;
+  const jan1 = `${year}-01-01`;
+
+  const already = (ss.annualLedger || []).some(
+    (e) =>
+      e.annual_item_id === itemId &&
+      String(e.entry_type || "").toLowerCase() === "contribution" &&
+      e.entry_date === jan1 &&
+      isAutoInitialEntry(e)
+  );
+  if (already) return;
+
+  // If there are no entries at all AND initial_cents is being used as the start balance, do nothing.
+  // The user can still add one later; we won't invent a snapshot out of thin air.
+  const hasAnyLedger = (ss.annualLedger || []).some((e) => e.annual_item_id === itemId);
+  if (!hasAnyLedger && (Number(item.initial_cents) || 0) !== 0) {
+    // Keep the typed starting balance in annual_items.initial_cents and do NOT create a snapshot.
+    return;
+  }
+
+  // Compute ending balance for prev year using the SAME rules:
+  // - If prev year had a snapshot, use window from that snapshot onward
+  // - Otherwise base initial = item.initial_cents, with all ledger
+  const prevYear = year - 1;
+
+  const prevWindow = getSinkingWindowForYear({ itemId, year: prevYear });
+  const { expenses, contributions } = splitAnnualEntries(prevWindow.windowEntries);
+
+  const spentPrevC = sumCents(expenses.map((x) => Number(x.amount_cents) || 0));
+  const contribPrevC = sumCents(contributions.map((x) => Number(x.amount_cents) || 0));
+  const basePrevInitialC = prevWindow.hasSnapshot ? 0 : (Number(item.initial_cents) || 0);
+
+  const prevBalanceC = basePrevInitialC + contribPrevC - spentPrevC;
+
+  const { error } = await supa.from("annual_ledger").insert({
+    budget_id: budgetId,
+    annual_item_id: itemId,
+    entry_type: "contribution",
+    amount_cents: prevBalanceC,
+    entry_date: jan1,
+    vendor: null,
+    item: null,
+    note: initialLabelForYear(year),
+  });
+
+  if (error) throw error;
+
+  await fetchAnnualBundle({ budgetId });
+}
+
+async function ensureAnnualAutosForYear({ budgetId, year }) {
+  const items = ss.annualItems || [];
+
+  // Ensure autos for annual budgets of this year
+  const budgets = items.filter((it) => String(it.type || "").trim() === "annual_budget" && Number(it.year) === year);
+  for (const it of budgets) {
+    await ensureAnnualBudgetInitial({ budgetId, year, item: it });
+  }
+
+  // Ensure sinking snapshots at Jan 1 (prevents snowball contributions)
+  const funds = items.filter((it) => String(it.type || "").trim() === "sinking_fund");
+  for (const it of funds) {
+    await ensureSinkingFundSnapshot({ budgetId, year, item: it });
+  }
+}
+
+// -------------------- Annual WRITES (polished prompt, v0.73 intent) --------------------
 async function addAnnualItem() {
   const year = yearFromMonthKey(currentMonthKey);
 
   const r = await openPromptModal({
     title: "Add Annual Item",
     fields: [
-      { key: "name", label: "Name", value: "", span2: true },
-      { key: "type", label: "Type (annual_budget or sinking_fund)", value: "annual_budget", span2: true },
-      { key: "year", label: "Year (blank for sinking_fund)", value: String(year) },
-      { key: "target", label: "Target", value: "0.00" },
-      { key: "initial", label: "Initial", value: "0.00" },
+      {
+        key: "type",
+        label: "Type",
+        type: "select",
+        value: "annual_budget",
+        span2: true,
+        options: [
+          { value: "annual_budget", label: "Annual Budget" },
+          { value: "sinking_fund", label: "Sinking Fund" },
+        ],
+      },
+      { key: "name", label: "Name", type: "text", value: "", span2: true, placeholder: "Vacation" },
+
+      // Annual Budget
+      { key: "budgeted", label: "Budgeted (Annual Budget)", type: "money", value: "0.00", showWhen: { type: "annual_budget" } },
+
+      // Sinking Fund
+      { key: "goal", label: "Goal (Sinking Fund)", type: "money", value: "0.00", showWhen: { type: "sinking_fund" } },
+      { key: "start", label: "Starting Balance (Sinking Fund)", type: "money", value: "0.00", showWhen: { type: "sinking_fund" } },
     ],
   });
 
   if (!r.ok) return;
 
+  const type = (r.values.type || "").trim();
   const name = (r.values.name || "").trim();
   if (!name) return;
 
-  const type = (r.values.type || "").trim();
   if (type !== "annual_budget" && type !== "sinking_fund") {
-    alert('Type must be "annual_budget" or "sinking_fund".');
+    alert("Invalid type.");
     return;
   }
-
-  const yrRaw = (r.values.year || "").trim();
-  const yr = yrRaw ? Number(yrRaw) : null;
-
-  if (type === "annual_budget" && (!yr || !Number.isFinite(yr))) {
-    alert("Annual Budget requires a year.");
-    return;
-  }
-  if (type === "sinking_fund" && yrRaw) {
-    alert("Sinking Fund must have a blank year.");
-    return;
-  }
-
-  const target = parseMoney(r.values.target || "0");
-  const initial = parseMoney(r.values.initial || "0");
 
   const bid = ss.activeBudgetId;
-  const { error } = await supa.from("annual_items").insert({
-    budget_id: bid,
-    type,
-    year: type === "annual_budget" ? yr : null,
-    name,
-    target_cents: toCents(target),
-    initial_cents: toCents(initial),
-  });
 
-  if (error) throw error;
+  if (type === "annual_budget") {
+    const budgeted = parseMoney(r.values.budgeted || "0");
+    const { error } = await supa.from("annual_items").insert({
+      budget_id: bid,
+      type: "annual_budget",
+      year,
+      name,
+      // v0.73: "Budgeted" is display-only; math uses ledger (initial auto contribution)
+      target_cents: toCents(budgeted),
+      initial_cents: 0,
+    });
+    if (error) throw error;
+
+    await fetchAnnualBundle({ budgetId: bid });
+    await ensureAnnualBudgetInitial({ budgetId: bid, year, item: (ss.annualItems || []).slice(-1)[0] || { id: null, target_cents: toCents(budgeted) } });
+  }
+
+  if (type === "sinking_fund") {
+    const goal = parseMoney(r.values.goal || "0");
+    const start = parseMoney(r.values.start || "0");
+
+    const { data, error } = await supa
+      .from("annual_items")
+      .insert({
+        budget_id: bid,
+        type: "sinking_fund",
+        year: null,
+        name,
+        target_cents: toCents(goal),
+        initial_cents: toCents(start), // v0.73-style start balance lives here unless snapshots exist later
+      })
+      .select("id")
+      .maybeSingle();
+
+    if (error) throw error;
+
+    // Do NOT create a snapshot immediately; we preserve initial_cents as the starting balance.
+    // The first January rollover will snapshot.
+    await fetchAnnualBundle({ budgetId: bid });
+  }
 
   await refreshCurrentMonth();
   render();
@@ -409,11 +569,11 @@ async function addAnnualEntry({ annualItemId, entryType }) {
   const r = await openPromptModal({
     title: entryType === "expense" ? "Add Annual Expense" : "Add Annual Contribution",
     fields: [
-      { key: "amount", label: "Amount", value: "", span2: true },
-      { key: "date", label: "Date (YYYY-MM-DD)", value: todayISO(), span2: true },
-      { key: "vendor", label: "Vendor", value: "", span2: true },
-      { key: "item", label: "Item", value: "", span2: true },
-      { key: "note", label: "Note", value: "", span2: true },
+      { key: "amount", label: "Amount", type: "money", value: "", span2: true },
+      { key: "date", label: "Date", type: "date", value: todayISO(), span2: true },
+      { key: "vendor", label: "Vendor", type: "text", value: "", span2: true, placeholder: "Walmart" },
+      { key: "item", label: "Item", type: "text", value: "", span2: true, placeholder: "Groceries" },
+      { key: "note", label: "Note", type: "text", value: "", span2: true, placeholder: "Optional" },
     ],
   });
 
@@ -453,15 +613,26 @@ async function editAnnualEntry(entryId) {
   const cur = (ss.annualLedger || []).find((x) => x.id === entryId);
   if (!cur) return;
 
+  // Block editing initial snapshots
+  if (isAutoInitialEntry(cur)) {
+    alert("Initial entries are automatic and cannot be edited.");
+    return;
+  }
+
   const r = await openPromptModal({
     title: "Edit Annual Entry",
     fields: [
-      { key: "entry_type", label: 'Type ("contribution" or "expense")', value: cur.entry_type || "", span2: true },
-      { key: "amount", label: "Amount", value: fromCents(cur.amount_cents || 0).toFixed(2), span2: true },
-      { key: "date", label: "Date (YYYY-MM-DD)", value: cur.entry_date || todayISO(), span2: true },
-      { key: "vendor", label: "Vendor", value: cur.vendor || "", span2: true },
-      { key: "item", label: "Item", value: cur.item || "", span2: true },
-      { key: "note", label: "Note", value: cur.note || "", span2: true },
+      { key: "entry_type", label: "Type", type: "select", value: String(cur.entry_type || "").toLowerCase(), span2: true,
+        options: [
+          { value: "contribution", label: "Contribution" },
+          { value: "expense", label: "Expense" },
+        ],
+      },
+      { key: "amount", label: "Amount", type: "money", value: fromCents(cur.amount_cents || 0).toFixed(2), span2: true },
+      { key: "date", label: "Date", type: "date", value: cur.entry_date || todayISO(), span2: true },
+      { key: "vendor", label: "Vendor", type: "text", value: cur.vendor || "", span2: true },
+      { key: "item", label: "Item", type: "text", value: cur.item || "", span2: true },
+      { key: "note", label: "Note", type: "text", value: cur.note || "", span2: true },
     ],
   });
 
@@ -504,7 +675,15 @@ async function editAnnualEntry(entryId) {
 }
 
 async function deleteAnnualEntry(entryId) {
-  const ok = confirm("Delete this annual entry?");
+  const cur = (ss.annualLedger || []).find((x) => x.id === entryId);
+  if (!cur) return;
+
+  if (isAutoInitialEntry(cur)) {
+    alert("Initial entries are automatic and cannot be deleted.");
+    return;
+  }
+
+  const ok = confirm("Delete this entry?");
   if (!ok) return;
 
   const { error } = await supa.from("annual_ledger").delete().eq("id", entryId);
@@ -518,38 +697,73 @@ async function editAnnualItem(itemId) {
   const cur = (ss.annualItems || []).find((x) => x.id === itemId);
   if (!cur) return;
 
-  const r = await openPromptModal({
-    title: "Edit Annual Item",
-    fields: [
-      { key: "name", label: "Name", value: cur.name || "", span2: true },
-      { key: "target", label: "Target", value: fromCents(cur.target_cents || 0).toFixed(2) },
-      { key: "initial", label: "Initial", value: fromCents(cur.initial_cents || 0).toFixed(2) },
-    ],
-  });
+  const type = String(cur.type || "").trim();
 
-  if (!r.ok) return;
+  if (type === "annual_budget") {
+    const r = await openPromptModal({
+      title: "Edit Annual Budget",
+      fields: [
+        { key: "name", label: "Name", type: "text", value: cur.name || "", span2: true },
+        { key: "budgeted", label: "Budgeted", type: "money", value: fromCents(cur.target_cents || 0).toFixed(2), span2: true },
+      ],
+    });
+    if (!r.ok) return;
 
-  const name = (r.values.name || "").trim();
-  if (!name) return;
+    const name = (r.values.name || "").trim();
+    if (!name) return;
 
-  const target = parseMoney(r.values.target || "0");
-  const initial = parseMoney(r.values.initial || "0");
+    const budgeted = parseMoney(r.values.budgeted || "0");
 
-  const { error } = await supa
-    .from("annual_items")
-    .update({
-      name,
-      target_cents: toCents(target),
-      initial_cents: toCents(initial),
-    })
-    .eq("id", itemId);
+    const { error } = await supa
+      .from("annual_items")
+      .update({
+        name,
+        target_cents: toCents(budgeted),
+      })
+      .eq("id", itemId);
 
-  if (error) throw error;
+    if (error) throw error;
+
+    // Keep initial auto aligned with budgeted (v0.73)
+    const year = yearFromMonthKey(currentMonthKey);
+    await fetchAnnualBundle({ budgetId: ss.activeBudgetId });
+    await ensureAnnualBudgetInitial({ budgetId: ss.activeBudgetId, year, item: { ...cur, target_cents: toCents(budgeted) } });
+  }
+
+  if (type === "sinking_fund") {
+    const r = await openPromptModal({
+      title: "Edit Sinking Fund",
+      fields: [
+        { key: "name", label: "Name", type: "text", value: cur.name || "", span2: true },
+        { key: "goal", label: "Goal", type: "money", value: fromCents(cur.target_cents || 0).toFixed(2), span2: true },
+        { key: "start", label: "Starting Balance", type: "money", value: fromCents(cur.initial_cents || 0).toFixed(2), span2: true },
+      ],
+    });
+    if (!r.ok) return;
+
+    const name = (r.values.name || "").trim();
+    if (!name) return;
+
+    const goal = parseMoney(r.values.goal || "0");
+    const start = parseMoney(r.values.start || "0");
+
+    const { error } = await supa
+      .from("annual_items")
+      .update({
+        name,
+        target_cents: toCents(goal),
+        initial_cents: toCents(start),
+      })
+      .eq("id", itemId);
+
+    if (error) throw error;
+  }
 
   await refreshCurrentMonth();
   render();
 }
 
+// -------------------- Budget + Month creation --------------------
 async function createBudgetViaRpc() {
   const name = (prompt("Budget name:") || "").trim();
   if (!name) return;
@@ -606,6 +820,7 @@ async function createMonth({ monthKey, copyPrev }) {
     }
   }
 
+  // Refresh + ensure annual autos; in January this will also create sinking snapshots
   await refreshCurrentMonth();
   render();
 }
@@ -629,7 +844,7 @@ async function updateIncome() {
   render();
 }
 
-// -------------------- Category modal helper --------------------
+// -------------------- Prompt modal helper (supports select/date/money + conditional fields) --------------------
 function openPromptModal({ title, fields }) {
   return new Promise((resolve) => {
     if (!promptModal || !promptTitle || !promptFields || !promptOkBtn || !promptCancelBtn) {
@@ -640,31 +855,95 @@ function openPromptModal({ title, fields }) {
 
     promptTitle.textContent = title || "Enter values";
 
-    promptFields.innerHTML = fields
-      .map((f) => {
-        const span = f.span2 ? " field-span-2" : "";
-        const type = f.type || "text";
-        const val = f.value ?? "";
-        const ph = f.placeholder ?? "";
-        return `
-          <label class="field${span}">
-            <span>${escapeHtml(f.label)}</span>
-            <input
-              class="input"
-              id="pm_${escapeAttr(f.key)}"
-              type="${escapeAttr(type)}"
-              ${f.money ? 'inputmode="decimal"' : ""}
-              value="${escapeAttr(val)}"
-              placeholder="${escapeAttr(ph)}"
-            />
-          </label>
-        `;
-      })
-      .join("");
+    const values = {};
+    for (const f of fields) values[f.key] = (f.value ?? "");
 
+    const get = (k) => String(values[k] ?? "").trim();
+
+    const shouldShow = (f) => {
+      if (!f.showWhen) return true;
+      for (const [k, v] of Object.entries(f.showWhen)) {
+        if (get(k) !== String(v)) return false;
+      }
+      return true;
+    };
+
+    const render = () => {
+      promptFields.innerHTML = fields
+        .filter((f) => shouldShow(f))
+        .map((f) => {
+          const span = f.span2 ? " field-span-2" : "";
+          const type = f.type || "text";
+          const val = values[f.key] ?? "";
+          const ph = f.placeholder ?? "";
+
+          if (type === "select") {
+            const opts = (f.options || [])
+              .map((o) => {
+                const sel = String(o.value) === String(val) ? "selected" : "";
+                return `<option value="${escapeAttr(o.value)}" ${sel}>${escapeHtml(o.label)}</option>`;
+              })
+              .join("");
+
+            return `
+              <label class="field${span}">
+                <span>${escapeHtml(f.label)}</span>
+                <select class="select" id="pm_${escapeAttr(f.key)}">
+                  ${opts}
+                </select>
+              </label>
+            `;
+          }
+
+          if (type === "date") {
+            return `
+              <label class="field${span}">
+                <span>${escapeHtml(f.label)}</span>
+                <input class="input" id="pm_${escapeAttr(f.key)}" type="date" value="${escapeAttr(val)}" />
+              </label>
+            `;
+          }
+
+          if (type === "money") {
+            return `
+              <label class="field${span}">
+                <span>${escapeHtml(f.label)}</span>
+                <input class="input input-money" id="pm_${escapeAttr(f.key)}" inputmode="decimal"
+                       value="${escapeAttr(val)}" placeholder="${escapeAttr(ph || "0.00")}" />
+              </label>
+            `;
+          }
+
+          return `
+            <label class="field${span}">
+              <span>${escapeHtml(f.label)}</span>
+              <input class="input" id="pm_${escapeAttr(f.key)}"
+                     type="${escapeAttr(type)}"
+                     value="${escapeAttr(val)}"
+                     placeholder="${escapeAttr(ph)}" />
+            </label>
+          `;
+        })
+        .join("");
+
+      // bind inputs
+      for (const f of fields) {
+        if (!shouldShow(f)) continue;
+        const el = document.getElementById(`pm_${f.key}`);
+        if (!el) continue;
+
+        el.oninput = () => {
+          values[f.key] = el.value;
+          if (f.type === "select") render(); // re-render for conditional fields
+        };
+        el.onchange = el.oninput;
+      }
+    };
+
+    render();
     openModal(promptModal);
 
-    const first = promptFields.querySelector("input");
+    const first = promptFields.querySelector("input,select");
     if (first) setTimeout(() => first.focus(), 0);
 
     const cleanup = () => {
@@ -683,18 +962,16 @@ function openPromptModal({ title, fields }) {
     if (closePromptModalBtn) closePromptModalBtn.onclick = cancel;
 
     promptOkBtn.onclick = () => {
-      const values = {};
-      for (const f of fields) {
-        const el = document.getElementById(`pm_${f.key}`);
-        values[f.key] = (el?.value ?? "").trim();
-      }
+      const out = {};
+      for (const f of fields) out[f.key] = String(values[f.key] ?? "").trim();
       cleanup();
       closeModal(promptModal);
-      resolve({ ok: true, values });
+      resolve({ ok: true, values: out });
     };
   });
 }
 
+// -------------------- Monthly category writes --------------------
 async function addMonthlyCategory() {
   const bid = ss.activeBudgetId;
   if (!bid) throw new Error("No active budget selected.");
@@ -704,8 +981,8 @@ async function addMonthlyCategory() {
   const r = await openPromptModal({
     title: "Add Monthly Category",
     fields: [
-      { key: "name", label: "Category name", value: "", span2: true },
-      { key: "budgeted", label: "Budgeted", value: "0.00", money: true },
+      { key: "name", label: "Category name", type: "text", value: "", span2: true },
+      { key: "budgeted", label: "Budgeted", type: "money", value: "0.00", span2: true },
     ],
   });
 
@@ -757,8 +1034,8 @@ async function editMonthlyCategory(catId) {
   const r = await openPromptModal({
     title: "Edit Monthly Category",
     fields: [
-      { key: "name", label: "Category name", value: cur.name || "", span2: true },
-      { key: "budgeted", label: "Budgeted", value: fromCents(cur.budgeted_cents || 0).toFixed(2), money: true },
+      { key: "name", label: "Category name", type: "text", value: cur.name || "", span2: true },
+      { key: "budgeted", label: "Budgeted", type: "money", value: fromCents(cur.budgeted_cents || 0).toFixed(2), span2: true },
     ],
   });
 
@@ -1073,6 +1350,7 @@ function renderTotalsOnly() {
   }
 }
 
+// -------------------- Monthly Table --------------------
 function renderMonthlyTable() {
   const b = getBudget(currentMonthKey);
   if (!b || !monthlyTable) return;
@@ -1189,14 +1467,12 @@ function renderMonthlyTable() {
   bindExpenseCardActions(monthlyTable);
 }
 
+// -------------------- Annual Tables (v0.73 style) --------------------
 function renderAnnualTables() {
-  const b = getBudget(currentMonthKey);
-  if (!b) return;
-
   const year = yearFromMonthKey(currentMonthKey);
-  const view = computeAnnualView({ year });
+  const view = computeAnnualViewV073({ year });
 
-  // -------- Annual Budgets --------
+  // Annual Budgets
   if (annualBudgetTable) {
     const header = `
       <div class="thead listgrid">
@@ -1207,23 +1483,23 @@ function renderAnnualTables() {
     `;
 
     if (!view.annualBudgets.length) {
-      annualBudgetTable.innerHTML = header + emptyRow("No annual budgets for this year.");
+      annualBudgetTable.innerHTML = header + emptyRow("No annual budgets yet.");
     } else {
       let html = header;
 
       for (const it of view.annualBudgets) {
         const spentC = Number(it.spent_cents) || 0;
-        const targetC = Number(it.target_cents) || 0;
-        const leftC = Number(it.left_cents) || (targetC - spentC);
+        const totalC = Number(it.total_available_cents) || 0;
+        const leftC = Number(it.left_cents) || (totalC - spentC);
 
         const line =
           amountMode === "left"
-            ? `${fmtMoneyNoCents(fromCents(leftC))} / ${fmtMoneyNoCents(fromCents(targetC))}`
-            : `${fmtMoneyNoCents(fromCents(spentC))} / ${fmtMoneyNoCents(fromCents(targetC))}`;
+            ? `${fmtMoneyNoCents(fromCents(leftC))} / ${fmtMoneyNoCents(fromCents(totalC))}`
+            : `${fmtMoneyNoCents(fromCents(spentC))} / ${fmtMoneyNoCents(fromCents(totalC))}`;
 
         const lineClass = amountMode === "left" && leftC < 0 ? "negative" : "";
-        const pctRemain = remainingPct(leftC, targetC);
-        const ringColor = remainingTone(leftC, targetC);
+        const pctRemain = remainingPct(leftC, totalC);
+        const ringColor = remainingTone(leftC, totalC);
 
         const isOpen = expanded.type === "annual_budget" && expanded.id === it.id;
 
@@ -1233,7 +1509,7 @@ function renderAnnualTables() {
               <span class="chev ${isOpen ? "open" : ""}">›</span>
               <div style="min-width:0;">
                 <div class="catname">${escapeHtml(it.name)}</div>
-                <div class="catsub">${escapeHtml(String(year))} • Annual Budget</div>
+                <div class="catsub">Budgeted: ${escapeHtml(fmtMoneyNoCents(fromCents(it.budgeted_cents || 0)))}</div>
               </div>
             </div>
 
@@ -1247,20 +1523,27 @@ function renderAnnualTables() {
           <div class="detail-row">
             <div class="detail-anim ${isOpen ? "open" : ""}">
               <div class="detail-inner">
+                <div class="detail-muted">${year} • Annual Budget</div>
+
                 <div class="row row-wrap row-gap">
-                  <button class="btn btn-primary" data-add-annual-entry="contribution:${it.id}">+ Contribution</button>
-                  <button class="btn btn-primary" data-add-annual-entry="expense:${it.id}">+ Expense</button>
+                  <button class="btn btn-primary" data-add-annual-entry="expense:${it.id}">+ Add Expense</button>
+                  <button class="btn btn-secondary" data-add-annual-entry="contribution:${it.id}">+ Contribution</button>
                   <button class="btn btn-secondary" data-edit-annual-item="${it.id}">Edit</button>
                 </div>
 
-                ${
-                  (it.entries || []).length
-                    ? `
+                ${it.contributions.length ? `
+                  <div class="detail-muted">Contributions (year)</div>
                   <div class="detail-list">
-                    ${(it.entries || []).map((e) => annualEntryCardHtml(e)).join("")}
-                  </div>`
-                    : `<div class="cell-muted">No entries for this annual budget yet.</div>`
-                }
+                    ${it.contributions.map((e)=>annualEntryCardHtml(e)).join("")}
+                  </div>
+                ` : ``}
+
+                <div class="detail-muted">Expenses (year)</div>
+                ${it.expenses.length ? `
+                  <div class="detail-list">
+                    ${it.expenses.map((e)=>annualEntryCardHtml(e)).join("")}
+                  </div>
+                ` : `<div class="cell-muted">No expenses yet this year.</div>`}
               </div>
             </div>
           </div>
@@ -1273,7 +1556,7 @@ function renderAnnualTables() {
     }
   }
 
-  // -------- Sinking Funds --------
+  // Sinking Funds
   if (sinkingFundTable) {
     const header = `
       <div class="thead listgrid">
@@ -1290,9 +1573,9 @@ function renderAnnualTables() {
 
       for (const it of view.sinkingFunds) {
         const balC = Number(it.balance_cents) || 0;
-        const targetC = Number(it.target_cents) || 0;
+        const goalC = Number(it.goal_cents) || 0;
 
-        const pct = targetC > 0 ? clamp01(balC / targetC) : balC > 0 ? 1 : 0;
+        const pct = goalC > 0 ? clamp01(balC / goalC) : balC > 0 ? 1 : 0;
         const ringColor = balC < 0 ? "bad" : pct >= 1 ? "accent" : pct >= 0.35 ? "warn" : "bad";
 
         const isOpen = expanded.type === "sinking_fund" && expanded.id === it.id;
@@ -1303,7 +1586,7 @@ function renderAnnualTables() {
               <span class="chev ${isOpen ? "open" : ""}">›</span>
               <div style="min-width:0;">
                 <div class="catname">${escapeHtml(it.name)}</div>
-                <div class="catsub">Sinking Fund • All-time</div>
+                ${goalC ? `<div class="catsub">Goal: ${escapeHtml(fmtMoneyNoCents(fromCents(goalC)))}</div>` : ``}
               </div>
             </div>
 
@@ -1317,20 +1600,27 @@ function renderAnnualTables() {
           <div class="detail-row">
             <div class="detail-anim ${isOpen ? "open" : ""}">
               <div class="detail-inner">
+                <div class="detail-muted">${year} • Sinking Fund</div>
+
                 <div class="row row-wrap row-gap">
-                  <button class="btn btn-primary" data-add-annual-entry="contribution:${it.id}">+ Contribution</button>
-                  <button class="btn btn-primary" data-add-annual-entry="expense:${it.id}">+ Expense</button>
+                  <button class="btn btn-primary" data-add-annual-entry="expense:${it.id}">+ Add Expense</button>
+                  <button class="btn btn-secondary" data-add-annual-entry="contribution:${it.id}">+ Contribution</button>
                   <button class="btn btn-secondary" data-edit-annual-item="${it.id}">Edit</button>
                 </div>
 
-                ${
-                  (it.entries || []).length
-                    ? `
+                ${it.contributions.length ? `
+                  <div class="detail-muted">Contributions</div>
                   <div class="detail-list">
-                    ${(it.entries || []).map((e) => annualEntryCardHtml(e)).join("")}
-                  </div>`
-                    : `<div class="cell-muted">No entries for this sinking fund yet.</div>`
-                }
+                    ${it.contributions.map((e)=>annualEntryCardHtml(e)).join("")}
+                  </div>
+                ` : ``}
+
+                <div class="detail-muted">Expenses</div>
+                ${it.expenses.length ? `
+                  <div class="detail-list">
+                    ${it.expenses.map((e)=>annualEntryCardHtml(e)).join("")}
+                  </div>
+                ` : `<div class="cell-muted">No expenses yet.</div>`}
               </div>
             </div>
           </div>
@@ -1342,17 +1632,6 @@ function renderAnnualTables() {
       bindAnnualActions(sinkingFundTable);
     }
   }
-}
-
-function sinkingHeaderHtml() {
-  // kept for compatibility (not used by the new annual renderer)
-  return `
-    <div class="thead listgrid">
-      <div>Category</div>
-      <div style="text-align:right;">Balance</div>
-      <div style="text-align:right;">&nbsp;</div>
-    </div>
-  `;
 }
 
 function bindAnnualActions(container) {
@@ -1420,24 +1699,30 @@ function annualEntryCardHtml(e) {
   const note = e.note ? escapeHtml(e.note) : "";
   const date = e.entry_date ? escapeHtml(e.entry_date) : "";
 
+  const auto = isAutoInitialEntry(e);
+
   return `
     <div class="detail-card">
       <div class="detail-card-top">
         <div>
-          <div class="exp-main">${title}</div>
+          <div class="exp-main">
+            ${title}
+            ${auto ? ` <span class="auto-pill">Initial</span>` : ``}
+          </div>
           ${note ? `<div class="exp-sub">${note}</div>` : ``}
           <div class="exp-sub">${date} • ${isExpense ? "Expense" : "Contribution"}</div>
         </div>
-        <div class="money ${isExpense ? "negative" : ""}">${fmtMoney(amt)}</div>
+        <div class="money ${isExpense ? "negative" : "positive"}">${fmtMoney(amt)}</div>
       </div>
       <div class="detail-actions">
-        <button class="icon-btn" data-edit-annual-entry="${escapeAttr(e.id)}">Edit</button>
-        <button class="icon-btn" data-del-annual-entry="${escapeAttr(e.id)}">Delete</button>
+        ${auto ? `` : `<button class="icon-btn" data-edit-annual-entry="${escapeAttr(e.id)}">Edit</button>`}
+        ${auto ? `` : `<button class="icon-btn" data-del-annual-entry="${escapeAttr(e.id)}">Delete</button>`}
       </div>
     </div>
   `;
 }
 
+// -------------------- List interactions --------------------
 function bindListInteractions(container) {
   if (!container) return;
 
@@ -1463,7 +1748,7 @@ function bindListInteractions(container) {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const [type, id] = btn.dataset.addExp.split(":");
-      openExpenseModal({ mode: "add", type, categoryId: id });
+      openExpenseModal({ mode: "add", categoryId: id });
     });
   });
 
@@ -1496,6 +1781,7 @@ function bindListInteractions(container) {
   });
 }
 
+// -------------------- Expense modal --------------------
 function openExpenseModal({ mode, categoryId = null, expense = null } = {}) {
   if (!expenseModal) return;
 
@@ -1523,6 +1809,7 @@ function openExpenseModal({ mode, categoryId = null, expense = null } = {}) {
     expAmount.value = "";
     expDate.value = todayISO();
     expNote.value = "";
+
     if (categoryId && expCategory.querySelector(`option[value="${cssEscape(categoryId)}"]`)) {
       expCategory.value = categoryId;
     } else {
@@ -1585,6 +1872,7 @@ function refreshExpenseCategoryDropdown() {
     .join("");
 }
 
+// -------------------- Expense cards --------------------
 function bindExpenseCardActions(container) {
   if (!container) return;
 
@@ -1707,7 +1995,6 @@ function yearFromMonthKey(monthKey) {
   return Number.isFinite(y) ? y : new Date().getFullYear();
 }
 function yearFromISODate(isoDate) {
-  // isoDate is YYYY-MM-DD
   const y = Number(String(isoDate || "").slice(0, 4));
   return Number.isFinite(y) ? y : null;
 }
