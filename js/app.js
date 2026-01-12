@@ -1,4 +1,4 @@
-/* SimpleSpend v0.9.7 (Annual + Sinking fixed to v0.73 behavior, Supabase-backed)
+/* SimpleSpend v0.9.8 (Annual + Sinking fixed to v0.73 behavior, Supabase-backed)
   Fixes:
   - Monthly + Annual expenses share ONE "+ Add Expense" flow (annual items show in list)
   - Annual expense/contribution always requires a Category (prevents annual_ledger_field_guard)
