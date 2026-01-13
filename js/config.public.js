@@ -1,4 +1,4 @@
-// js/config.public.js (COMMITTED)
+// js/config.public.js (COMMITTED) 
 window.SS_CONFIG = {
   // PROD
   // SUPABASE_URL: "https://oplfdgnhncdpqqxlovdt.supabase.co",
