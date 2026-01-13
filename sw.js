@@ -1,4 +1,4 @@
-const CACHE_NAME = "simplespend-v0.84";
+const CACHE_NAME = "simplespend-v0.9.6.3.3";
 
 const FILES = [
   "./",
@@ -45,18 +45,39 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const { request } = e;
 
-  // Never cache Supabase or external ESM
-  if (
-    request.url.includes("supabase") ||
-    request.url.includes("esm.sh")
-  ) {
+  // Only handle GET
+  if (request.method !== "GET") return;
+
+  // Never touch Supabase or external ESM
+  if (request.url.includes("supabase") || request.url.includes("esm.sh")) return;
+
+  const url = new URL(request.url);
+
+  // Only handle same-origin
+  if (url.origin !== self.location.origin) return;
+
+  const isNav = request.mode === "navigate";
+  const isHTML = request.headers.get("accept")?.includes("text/html");
+  const isJS = url.pathname.endsWith(".js");
+
+  // NETWORK-FIRST for navigations, HTML, and JS (so updates actually land)
+  if (isNav || isHTML || isJS) {
+    e.respondWith(
+      fetch(request)
+        .then((res) => {
+          // update cache
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(request, copy));
+          return res;
+        })
+        .catch(() => caches.match(request).then((r) => r || caches.match("./index.html")))
+    );
     return;
   }
 
+  // CACHE-FIRST for everything else (css, icons, manifest, etc)
   e.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached;
-      return fetch(request);
-    })
+    caches.match(request).then((cached) => cached || fetch(request))
   );
 });
+
