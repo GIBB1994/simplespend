@@ -1,232 +1,136 @@
-# SimpleSpend — Backend Contract (Authoritative)
+Backend Contract (Current, Canonical)
+Tables
+budgets
 
-This document defines the **backend data contract** for SimpleSpend.
-If implementation disagrees with this document, **implementation is wrong**.
+id (uuid)
 
-This contract is frozen before schema, RLS, or frontend wiring begins.
+name
 
----
+created_at
 
-## 1. Scope & Assumptions
+budget_members
 
-- Backend will be Supabase (Postgres + RLS)
-- Frontend is a static PWA
-- Auth is Supabase Auth (email/password initially)
-- LocalStorage may exist temporarily but is **not** the source of truth
-- All long-term data is stored in Postgres
+budget_id
 
----
+user_id
 
-## 2. Ownership & Access Model (Locked)
+role (owner/editor/viewer)
 
-### Budget-Centric Model
-- **All data is scoped by `budget_id`**
-- Users do not own data directly; **budgets do**
-- Users gain access via membership
+months
 
-### Membership Rule
-A user may read/write a row **only if**:
-- They are a member of that row’s `budget_id`
+(budget_id, month_key) PK
 
-### Roles (Phase 1 + Phase 2 Ready)
-- `owner` — full control, can manage members
-- `editor` — can add/edit/delete data
-- `viewer` — read-only
+income_cents
 
----
+Auto-creates Extra category
 
-## 3. Canonical Keys & Formats (Locked)
+monthly_categories
 
-### Month Key
-- `month_key`: string formatted as `YYYY-MM` (example: `2026-01`)
-- One and only one month row per:
-  - (`budget_id`, `month_key`)
+(budget_id, month_key, category_key) PK
 
-### Money
-- All money stored as **integer cents**
-  - Examples: `amount_cents`, `income_cents`
-- Formatting (dollars, no cents, negatives) is UI-only
+budgeted_cents
 
-### Dates
-- Stored as Postgres `date`
-- ISO format: `YYYY-MM-DD`
+is_extra enforced by constraint
 
----
+monthly_expenses
 
-## 4. Entities (Tables We Will Have)
+amount_cents <> 0
 
-### Core
-- `budgets`
-- `budget_members`
-- `profiles` (optional; display name only)
+FK → monthly_categories
 
-### Monthly Subsystem
-- `months`
-- `monthly_categories`
-- `monthly_expenses`
+Extra cannot be manually selected
 
-### Annual Subsystem
-- `annual_items`
-- `annual_ledger`
+annual_items
 
----
+id (uuid)
 
-## 5. Required Invariants (Backend-Enforced Rules)
+budget_id
 
-### Monthly Rules
-1. Monthly categories are created **only** via “Add Monthly Category”
-2. Creating an annual item **must never** create a monthly category
-3. Each month has exactly **one income value**
-4. Expenses must always reference a valid category (or Extra)
-5. Deleting a monthly category **never deletes expenses**
-   - Expenses are reassigned to Extra
-6. Deleting a month is allowed (see §12)
+type ∈ {annual_budget, sinking_fund}
 
-### Annual Rules
-7. Annual Budgets are scoped to (`budget_id`, `year`)
-8. Annual Budgets do **not** roll over year-to-year
-9. Sinking Funds are scoped to (`budget_id`) and **roll over all-time**
-10. Ledger entries are the source of truth
-11. No stored balance / remaining / total fields are authoritative
+year (required for annual_budget, NULL for sinking_fund)
 
----
+item_key NOT NULL, stable
 
-## 6. Extra Bucket (Hidden Uncategorized) (Locked)
+name
 
-**Purpose:** Nothing disappears; cleanup is forced without data loss.
+target_cents
 
-### Identifier (Locked)
-- Special hidden category
-- Display name: `Extra`
-- Fixed ID: `extra99` (intentionally uncommon)
+initial_cents
 
-### Implementation (Locked)
-**Option A (chosen): Extra is a real category row per month**
-- Each month must have a hidden `monthly_categories` row with:
-  - `id = 'extra99'`
-  - `name = 'Extra'`
-  - `is_extra = true` (recommended flag; still keep the fixed ID)
-- Extra:
-  - ❌ never selectable in Add Expense
-  - ❌ cannot be deleted
-  - ✅ appears in UI only if it has expenses (UI rule)
-- On category delete:
-  - Expenses are reassigned to `category_id = 'extra99'`
+annual_ledger
 
-### Backend Requirements for Extra
-- DB must prevent:
-  - deleting the extra row
-  - renaming `extra99`
-  - changing `is_extra` off
-- DB must support:
-  - reassignment to extra on category delete (app logic or trigger)
+id
 
----
+budget_id
 
-## 7. Annual System (Two Types, Same Ledger Idea)
+annual_item_id
 
-### Annual Item Types
-- `annual_budget`
-- `sinking_fund`
+entry_type ∈ {expense, contribution}
 
-### annual_items
-Fields:
-- `id`
-- `budget_id`
-- `type` (`annual_budget` | `sinking_fund`)
-- `name`
-- `target_cents`
-- `initial_cents`
-- `year` (required for annual_budget, NULL for sinking_fund)
-- timestamps
+amount_cents <> 0
 
-Rules:
-- If `type='annual_budget'`, `year` is NOT NULL
-- If `type='sinking_fund'`, `year` IS NULL
+entry_date
 
-### annual_ledger
-Fields:
-- `id`
-- `budget_id`
-- `annual_item_id`
-- `entry_type` (`contribution` | `expense`)
-- `amount_cents`
-- `date`
-- `vendor` (expense only)
-- `item` (expense only)
-- `note` (optional)
+vendor (nullable)
 
----
+item (nullable)
 
-## 8. Ledger Rules (Locked)
+note
 
-- Ledger entries are append-style records (no derived totals stored as truth)
-- Contributions and expenses:
-  - Can be **edited**
-  - Can be **deleted**
-- Editing or deleting ledger entries must update derived totals automatically (by recomputation)
+Important change:
+Vendor/item are NOT structurally enforced.
+They are UI concerns, not DB constraints.
 
----
+Backend Guarantees
 
-## 9. Derived Values (Computed Only — Never Stored)
+All data scoped by budget_id
 
-### Monthly
-- Planned Remaining  
-  `income − sum(monthly_budgeted)`
-- Left to Spend  
-  `income − sum(monthly_spent)`
+RLS enforced everywhere
 
-### Annual Budget
-- TotalAvailable  
-  `target + initial + sum(contributions)`
-- Left  
-  `TotalAvailable − spent`
+RPC required for budget creation
 
-### Sinking Fund
-- Funded  
-  `initial + sum(contributions)`
-- Balance  
-  `Funded − spent`
+Cascades are intentional and predictable
 
-**Rule:** None of the above are persisted as truth.
+No hidden side effects
 
----
+Service Worker Rules (Locked)
 
-## 10. Minimum Frontend Data Shapes (Expectations)
+Cache assets only
 
-### Monthly Screen Load
-- Month (income)
-- Monthly categories (name, budgeted)
-- Expenses grouped by category
-- Rollups computed from expenses (and later reporting)
+Network-first for:
 
-### Annual Screen Load
-- Annual items list
-- Ledger entries:
-  - Annual Budget → filtered by year
-  - Sinking Fund → all-time
+HTML
 
----
+JS
 
-## 11. Decisions Log (Locked)
+Cache-first for:
 
-- Money stored as integer cents ✅
-- Month key format `YYYY-MM` ✅
-- Ledger is the source of truth ✅
-- Annual Budgets do not roll over ✅
-- Sinking Funds roll over all-time ✅
-- Extra implementation: Option A (real row) ✅
-- Extra fixed ID: `extra99` ✅
-- Delete month allowed ✅
-- Rename category allowed ✅
+CSS
 
----
+Icons
 
-## 12. Operational Rules (Locked)
+Supabase traffic is never cached
 
-### Delete Month (Allowed)
-- Deleting a month is allowed.
-- Deleting a month must remove:
-  - `months` row for that month_key
-  - `monthly_categories` rows for that month_key (including `extra99`)
-  - `monthly_expenses`_
+Known Current Limitations (Accepted)
+
+Annual UI can be cleaner (grouping, filters)
+
+New user onboarding still fragile
+
+No invite flow yet
+
+No reporting views
+
+Offline writes not supported (read-only offline)
+
+All intentional for this stage.
+
+🧱 Backend Contract Summary (Drop-In Version)
+
+Annual budgets are year-scoped rows in annual_items.
+Sinking funds are all-time rows.
+Ledger entries move money.
+Targets are notes.
+Balances are computed.
+Rollover is explicit and one-time.
