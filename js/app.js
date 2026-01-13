@@ -1,4 +1,4 @@
-/* SimpleSpend v0.9.6.2 (AStep 8 — WRITES WIRED + Category modal UI)
+/* SimpleSpend v0.9.6.3 (AStep 8 — WRITES WIRED + Category modal UI)
   - Supabase is source of truth
   - Implements:
       8.1 Create Budget (RPC only)
@@ -18,8 +18,8 @@
       contributions ignore vendor/item (forced null)
 */
 
-const APP_FALLBACK_VERSION = "v0.9.6.2";
-const STORAGE_KEY = "simplespend_v0962";
+const APP_FALLBACK_VERSION = "v0.9.6.3";
+const STORAGE_KEY = "simplespend_v0963";
 
 // Backend truth
 const EXTRA_ID = "extra99";
@@ -81,6 +81,9 @@ let _booted = false;
 // Supabase wiring
 let supa = null;
 let authedUser = null;
+
+// Annual rollover cache
+const _rolloverDone = new Set(); // key: `${budgetId}:${year}`
 
 // Read snapshot from Supabase
 let ss = {
@@ -213,7 +216,7 @@ function hydrateLocalMonthFromSupabase({ monthKey }) {
         sort_order: Number(c.sort_order) || 0,
       })),
     // annual view-model lives in state for rendering, but is hydrated from ss yearly
-    annualCategories: (state.budgets[monthKey]?.annualCategories || []),
+    annualCategories: state.budgets[monthKey]?.annualCategories || [],
     expenses: (ss.monthlyExpenses || []).map((e) => ({
       id: e.id,
       type: "monthly",
@@ -225,7 +228,7 @@ function hydrateLocalMonthFromSupabase({ monthKey }) {
       note: e.note || "",
     })),
     // legacy slot used by annual view-model (we repurpose for sinking funds list)
-    contributions: (state.budgets[monthKey]?.contributions || []),
+    contributions: state.budgets[monthKey]?.contributions || [],
   };
 
   state.budgets[monthKey] = b;
@@ -246,10 +249,14 @@ async function refreshCurrentMonth() {
   await fetchAnnualBundle({ budgetId: bid, year });
 
   // ensure this year has annual budgets by cloning previous year if needed
-  await ensureAnnualBudgetsForYear({ budgetId: bid, year });
+  const rollKey = `${bid}:${year}`;
+  if (!_rolloverDone.has(rollKey)) {
+    await ensureAnnualBudgetsForYear({ budgetId: bid, year });
+    _rolloverDone.add(rollKey);
 
-  // re-pull after any inserts so view is up to date
-  await fetchAnnualBundle({ budgetId: bid, year });
+    // re-pull after any inserts so view is up to date
+    await fetchAnnualBundle({ budgetId: bid, year });
+  }
 
   hydrateAnnualIntoState({ monthKey: currentMonthKey, year });
 }
@@ -277,33 +284,45 @@ async function fetchAnnualBundle({ budgetId, year }) {
   ss.annualLedger = led.data || [];
 }
 
-// Auto-clone last year's annual budgets into this year if empty
+// Auto-clone last year's annual budgets into this year if needed (idempotent)
 async function ensureAnnualBudgetsForYear({ budgetId, year }) {
-  // if any annual budgets already exist for this year, do nothing
-  const hasThisYear = (ss.annualItems || []).some(
-    (x) => x.type === "annual_budget" && Number(x.year) === Number(year)
-  );
-  if (hasThisYear) return;
-
   const prevYear = Number(year) - 1;
+
   const prev = (ss.annualItems || []).filter(
     (x) => x.type === "annual_budget" && Number(x.year) === prevYear
   );
   if (!prev.length) return;
 
-  const rows = prev.map((p) => {
-    const targetC = Number(p.target_cents) || 0;
-    return {
-      budget_id: budgetId,
-      type: "annual_budget",
-      year,
-      name: p.name,
-      target_cents: targetC,
-      initial_cents: targetC, // start funded = budgeted
-    };
-  });
+  const cur = (ss.annualItems || []).filter(
+    (x) => x.type === "annual_budget" && Number(x.year) === Number(year)
+  );
 
-  const { error } = await supa.from("annual_items").insert(rows);
+  // Use item_key if you have it. If not, slug(name) is a workable fallback.
+  const keyOf = (row) => {
+    // return row.item_key || slugKey(row.name || "");
+    return slugKey(row.name || "");
+  };
+
+  const curKeys = new Set(cur.map(keyOf));
+
+  const toInsert = prev
+    .filter((p) => !curKeys.has(keyOf(p)))
+    .map((p) => {
+      const budgetedC = Number(p.target_cents) || 0; // copy targeted/budgeted amount (not total)
+      return {
+        budget_id: budgetId,
+        type: "annual_budget",
+        year,
+        name: p.name,
+        target_cents: budgetedC,
+        initial_cents: budgetedC, // start funded = budgeted
+        // item_key: p.item_key, // if you have it
+      };
+    });
+
+  if (!toInsert.length) return;
+
+  const { error } = await supa.from("annual_items").insert(toInsert);
   if (error) throw error;
 }
 
@@ -381,7 +400,7 @@ function computeAnnualView({ year }) {
         year: itYear,
 
         // display/reference
-        target_cents: targetC,   // display-only note
+        target_cents: targetC, // display-only note
         initial_cents: initialC, // budgeted/funded starting amount
 
         spent_cents: spentC,
@@ -395,9 +414,9 @@ function computeAnnualView({ year }) {
       sinkingFunds.push({
         id: it.id,
         name: it.name,
-        target_cents: targetC,     // goal ring
-        initial_cents: initialC,   // starting balance
-        balance_cents: balanceC,   // real balance
+        target_cents: targetC, // goal ring
+        initial_cents: initialC, // starting balance
+        balance_cents: balanceC, // real balance
         entries: allEntries,
       });
     }
@@ -510,16 +529,22 @@ async function addAnnualEntry({ annualItemId, entryType }) {
   const isExpense = entryType === "expense";
 
   const vendorRaw = (r.values.vendor || "").trim();
-  const itemRaw   = (r.values.item || "").trim();
+  const itemRaw = (r.values.item || "").trim();
 
   // DB-guard friendly behavior:
   if (isExpense) {
-    if (!vendorRaw) { alert("Vendor is required for expenses."); return; }
-    if (!itemRaw)   { alert("Item is required for expenses."); return; }
+    if (!vendorRaw) {
+      alert("Vendor is required for expenses.");
+      return;
+    }
+    if (!itemRaw) {
+      alert("Item is required for expenses.");
+      return;
+    }
   }
 
   const vendorVal = isExpense ? vendorRaw : null;
-  const itemVal   = isExpense ? itemRaw   : null;
+  const itemVal = isExpense ? itemRaw : null;
 
   const { error } = await supa.from("annual_ledger").insert({
     budget_id: bid,
@@ -578,15 +603,21 @@ async function editAnnualEntry(entryId) {
   const isExpense = entry_type === "expense";
 
   const vendorRaw = (r.values.vendor || "").trim();
-  const itemRaw   = (r.values.item || "").trim();
+  const itemRaw = (r.values.item || "").trim();
 
   if (isExpense) {
-    if (!vendorRaw) { alert("Vendor is required for expenses."); return; }
-    if (!itemRaw)   { alert("Item is required for expenses."); return; }
+    if (!vendorRaw) {
+      alert("Vendor is required for expenses.");
+      return;
+    }
+    if (!itemRaw) {
+      alert("Item is required for expenses.");
+      return;
+    }
   }
 
   const vendorVal = isExpense ? vendorRaw : null;
-  const itemVal   = isExpense ? itemRaw   : null;
+  const itemVal = isExpense ? itemRaw : null;
 
   const { error } = await supa
     .from("annual_ledger")
@@ -664,6 +695,8 @@ async function editAnnualItem(itemId) {
 
 // -------------------- Budget + Month WRITES --------------------
 async function createBudgetViaRpc() {
+  if (!authedUser) throw new Error("Not signed in.");
+
   const name = (prompt("Budget name:") || "").trim();
   if (!name) return;
 
@@ -671,7 +704,9 @@ async function createBudgetViaRpc() {
   if (error) throw error;
 
   await fetchBudgetsForUser();
-  ss.activeBudgetId = pickActiveBudgetId();
+  ss.activeBudgetId = ss.budgets?.[0]?.id || null;
+  if (!ss.activeBudgetId)
+    throw new Error("Budget create succeeded but no budget is visible (RLS/membership issue).");
 
   await refreshCurrentMonth();
   seedMonthSelect();
@@ -1332,7 +1367,7 @@ function renderAnnualTables() {
       for (const it of view.annualBudgets) {
         const spentC = Number(it.spent_cents) || 0;
         const totalC = Number(it.total_cents) || 0; // initial + contributions
-        const leftC = Number(it.left_cents) || (totalC - spentC);
+        const leftC = Number(it.left_cents) || totalC - spentC;
 
         const line =
           amountMode === "left"
@@ -1722,7 +1757,7 @@ function bindExpenseCardActions(container) {
       e.stopPropagation();
       const id = btn.dataset.editExp;
       const b = getBudget(currentMonthKey);
-      const ex = (b?.expenses || []).find((x) => String(x.id) === String(id));
+      const ex = b?.expenses?.find((x) => String(x.id) === String(id));
       if (!ex) return;
       openExpenseModal({ mode: "edit", expense: ex });
     });
