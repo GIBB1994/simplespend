@@ -1,136 +1,259 @@
-Backend Contract (Current, Canonical)
-Tables
-budgets
+# SimpleSpend — Backend Contract (Authoritative)
 
-id (uuid)
+This document defines the **authoritative backend data contract** for SimpleSpend.
 
-name
+If implementation disagrees with this document, **the implementation is wrong**.  
+This contract exists to make frontend behavior predictable, debuggable, and stable.
 
-created_at
+---
 
-budget_members
+## Scope & Assumptions
 
-budget_id
+- Backend: **Supabase (Postgres + RLS)**
+- Frontend: Static PWA
+- Auth: Supabase Auth (email/password)
+- LocalStorage: view-model cache only
+- **Postgres is the source of truth**
 
-user_id
+---
 
-role (owner/editor/viewer)
+## Ownership & Access Model (Locked)
 
-months
+### Budget-Centric
+- **All data is scoped by `budget_id`**
+- Users do not own rows directly
+- Access is granted via budget membership
 
-(budget_id, month_key) PK
+### Membership Rule
+A user may read/write a row **only if**:
+- They are a member of that row’s `budget_id`
 
-income_cents
+### Roles (Phase-ready)
+- `owner` — full control, manage members
+- `editor` — create/edit/delete data
+- `viewer` — read-only
 
-Auto-creates Extra category
+---
 
-monthly_categories
+## Canonical Keys & Formats (Locked)
 
-(budget_id, month_key, category_key) PK
+### Month Key
+- `month_key`: `YYYY-MM`
+- Exactly one row per (`budget_id`, `month_key`)
 
-budgeted_cents
+### Money
+- Stored as **integer cents**
+- Examples: `amount_cents`, `income_cents`
+- Formatting is UI-only
 
-is_extra enforced by constraint
+### Dates
+- Stored as Postgres `date`
+- ISO format: `YYYY-MM-DD`
 
-monthly_expenses
+---
 
-amount_cents <> 0
+## Tables
 
-FK → monthly_categories
+### budgets
+- `id` (uuid, PK)
+- `name`
+- `created_at`
 
-Extra cannot be manually selected
+---
 
-annual_items
+### budget_members
+- `budget_id` (FK → budgets)
+- `user_id`
+- `role`
 
-id (uuid)
+---
 
-budget_id
+## Monthly Subsystem
 
-type ∈ {annual_budget, sinking_fund}
+### months
+- `budget_id` (FK)
+- `month_key`
+- `income_cents`
 
-year (required for annual_budget, NULL for sinking_fund)
+**Constraints**
+- PK: (`budget_id`, `month_key`)
+- `month_key` format enforced
+- Cascade delete removes month data
 
-item_key NOT NULL, stable
+---
 
-name
+### monthly_categories
+- `budget_id`
+- `month_key`
+- `category_key`
+- `name`
+- `budgeted_cents`
+- `sort_order`
+- `is_extra`
 
-target_cents
+**Extra Category (Locked)**
+- Fixed `category_key = 'extra99'`
+- `name = 'Extra'`
+- `is_extra = true`
+- Cannot be deleted or renamed
+- Hidden unless it has expenses
 
-initial_cents
+**Rules**
+- Deleting a category never deletes expenses
+- Expenses are reassigned to Extra
 
-annual_ledger
+---
 
-id
+### monthly_expenses
+- `id` (uuid, PK)
+- `budget_id`
+- `month_key`
+- `category_key`
+- `vendor`
+- `item`
+- `amount_cents`
+- `expense_date`
+- `note`
 
-budget_id
+**Constraints**
+- `amount_cents ≠ 0`
+- FK to monthly_categories
+- FK cascade on month delete
 
-annual_item_id
+---
 
-entry_type ∈ {expense, contribution}
+## Annual Subsystem
 
-amount_cents <> 0
+### annual_items
+Represents either an **annual budget** or a **sinking fund**.
 
-entry_date
+- `id` (uuid, PK)
+- `budget_id`
+- `type` (`annual_budget` | `sinking_fund`)
+- `year`
+- `name`
+- `item_key` (slug, NOT NULL)
+- `target_cents`
+- `initial_cents`
+- `created_at`
+- `updated_at`
 
-vendor (nullable)
+**Rules**
+- `annual_budget`:
+  - `year` NOT NULL
+  - scoped to one year
+- `sinking_fund`:
+  - `year` MUST be NULL
+  - persists all-time
+- `item_key`:
+  - lowercase slug
+  - stable across years
+  - generated once
+  - never changes
 
-item (nullable)
+---
 
-note
+### annual_ledger
+Ledger of all money movement for annual items.
 
-Important change:
-Vendor/item are NOT structurally enforced.
-They are UI concerns, not DB constraints.
+- `id` (uuid, PK)
+- `budget_id`
+- `annual_item_id`
+- `entry_type` (`expense` | `contribution`)
+- `amount_cents`
+- `entry_date`
+- `vendor`
+- `item`
+- `note`
+- `created_at`
+- `updated_at`
 
-Backend Guarantees
+**Ledger Guards (DB-enforced)**
+- `amount_cents ≠ 0`
+- `expense`:
+  - vendor NOT NULL
+  - item NOT NULL
+- `contribution`:
+  - vendor NULL
+  - item NULL
 
-All data scoped by budget_id
+Ledger rows:
+- are append-style
+- can be edited
+- can be deleted
+- are always recomputed into totals
 
-RLS enforced everywhere
+---
 
-RPC required for budget creation
+## Annual Semantics (Locked)
 
-Cascades are intentional and predictable
+### Annual Budgets
+- `initial_cents` = funded amount (budgeted up front)
+- `target_cents` = display-only note
+- Contributions add money
+- Expenses subtract money
 
-No hidden side effects
+**Derived (never stored)**
+- Total Available = `initial + contributions`
+- Left = `total - spent`
 
-Service Worker Rules (Locked)
+### Rollover Rule
+- When a year is first encountered:
+  - Annual budgets are cloned from prior year
+  - Only the **budgeted/target amount** is copied
+  - Happens once per year
+  - Never re-runs
 
-Cache assets only
+---
 
-Network-first for:
+### Sinking Funds
+- `initial_cents` = starting balance
+- `target_cents` = goal (ring only)
+- Balance = `initial + contributions - spent`
+- No year scoping
+- Never rolled over
 
-HTML
+---
 
-JS
+## Derived Values (Never Stored)
 
-Cache-first for:
+### Monthly
+- Planned Remaining = `income − sum(budgeted)`
+- Left to Spend = `income − sum(spent)`
 
-CSS
+### Annual
+- Totals, balances, progress rings
 
-Icons
+All derived values are computed at read time.
 
-Supabase traffic is never cached
+---
 
-Known Current Limitations (Accepted)
+## Deletion Rules (Locked)
 
-Annual UI can be cleaner (grouping, filters)
+### Delete Month (Allowed)
+Deleting a month must remove:
+- `months`
+- `monthly_categories` (including Extra)
+- `monthly_expenses`
 
-New user onboarding still fragile
+Annual data is never affected by month deletion.
 
-No invite flow yet
+---
 
-No reporting views
+## Error Philosophy
 
-Offline writes not supported (read-only offline)
+- Database constraints enforce correctness
+- Frontend validates early for UX
+- Errors are surfaced immediately
+- No silent correction or fallback
 
-All intentional for this stage.
+---
 
-🧱 Backend Contract Summary (Drop-In Version)
+## Final Notes
 
-Annual budgets are year-scoped rows in annual_items.
-Sinking funds are all-time rows.
-Ledger entries move money.
-Targets are notes.
-Balances are computed.
-Rollover is explicit and one-time.
+This backend contract exists to:
+- prevent data drift
+- enforce financial correctness
+- allow fearless frontend iteration
+
+Changes to this contract should be rare and deliberate.
