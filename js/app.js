@@ -1,4 +1,4 @@
-/* SimpleSpend v0.9.6 (AStep 8 — WRITES WIRED + Category modal UI)
+/* SimpleSpend v0.9.6.2 (AStep 8 — WRITES WIRED + Category modal UI)
   - Supabase is source of truth
   - Implements:
       8.1 Create Budget (RPC only)
@@ -18,8 +18,8 @@
       contributions ignore vendor/item (forced null)
 */
 
-const APP_FALLBACK_VERSION = "v0.9.6";
-const STORAGE_KEY = "simplespend_v096";
+const APP_FALLBACK_VERSION = "v0.9.6.2";
+const STORAGE_KEY = "simplespend_v0962";
 
 // Backend truth
 const EXTRA_ID = "extra99";
@@ -241,7 +241,16 @@ async function refreshCurrentMonth() {
 
   // annual (year-context from current month)
   const year = yearFromMonthKey(currentMonthKey);
+
+  // initial pull (populates ss.annualItems / ss.annualLedger)
   await fetchAnnualBundle({ budgetId: bid, year });
+
+  // ensure this year has annual budgets by cloning previous year if needed
+  await ensureAnnualBudgetsForYear({ budgetId: bid, year });
+
+  // re-pull after any inserts so view is up to date
+  await fetchAnnualBundle({ budgetId: bid, year });
+
   hydrateAnnualIntoState({ monthKey: currentMonthKey, year });
 }
 
@@ -266,6 +275,36 @@ async function fetchAnnualBundle({ budgetId, year }) {
 
   if (led.error) throw led.error;
   ss.annualLedger = led.data || [];
+}
+
+// Auto-clone last year's annual budgets into this year if empty
+async function ensureAnnualBudgetsForYear({ budgetId, year }) {
+  // if any annual budgets already exist for this year, do nothing
+  const hasThisYear = (ss.annualItems || []).some(
+    (x) => x.type === "annual_budget" && Number(x.year) === Number(year)
+  );
+  if (hasThisYear) return;
+
+  const prevYear = Number(year) - 1;
+  const prev = (ss.annualItems || []).filter(
+    (x) => x.type === "annual_budget" && Number(x.year) === prevYear
+  );
+  if (!prev.length) return;
+
+  const rows = prev.map((p) => {
+    const targetC = Number(p.target_cents) || 0;
+    return {
+      budget_id: budgetId,
+      type: "annual_budget",
+      year,
+      name: p.name,
+      target_cents: targetC,
+      initial_cents: targetC, // start funded = budgeted
+    };
+  });
+
+  const { error } = await supa.from("annual_items").insert(rows);
+  if (error) throw error;
 }
 
 function hydrateAnnualIntoState({ monthKey, year }) {
@@ -330,7 +369,7 @@ function computeAnnualView({ year }) {
     if (type === "annual_budget") {
       if (itYear !== year) continue;
 
-      // ✅ v0.73-style annual budget semantics:
+      // v0.73-style annual budget semantics:
       // TotalAvailable = initial + contributions (target is NOT money)
       // Left = TotalAvailable - spent
       const totalC = initialC + contribC;
@@ -410,7 +449,7 @@ async function addAnnualItem() {
 
   const bid = ss.activeBudgetId;
 
-  // ✅ Semantics:
+  // Semantics:
   // Annual Budget:
   //   - Budgeted funds the envelope up front -> store into initial_cents
   //   - target_cents is display-only note (we mirror budgeted for now)
@@ -467,10 +506,20 @@ async function addAnnualEntry({ annualItemId, entryType }) {
 
   const bid = ss.activeBudgetId;
 
-  // ✅ strict expense-only
+  // strict expense-only vendor/item behavior
   const isExpense = entryType === "expense";
-  const vendorVal = isExpense ? ((r.values.vendor || "").trim() || null) : null;
-  const itemVal = isExpense ? ((r.values.item || "").trim() || null) : null;
+
+  const vendorRaw = (r.values.vendor || "").trim();
+  const itemRaw   = (r.values.item || "").trim();
+
+  // DB-guard friendly behavior:
+  if (isExpense) {
+    if (!vendorRaw) { alert("Vendor is required for expenses."); return; }
+    if (!itemRaw)   { alert("Item is required for expenses."); return; }
+  }
+
+  const vendorVal = isExpense ? vendorRaw : null;
+  const itemVal   = isExpense ? itemRaw   : null;
 
   const { error } = await supa.from("annual_ledger").insert({
     budget_id: bid,
@@ -525,10 +574,19 @@ async function editAnnualEntry(entryId) {
     return;
   }
 
-  // ✅ strict expense-only
+  // strict expense-only vendor/item behavior
   const isExpense = entry_type === "expense";
-  const vendorVal = isExpense ? ((r.values.vendor || "").trim() || null) : null;
-  const itemVal = isExpense ? ((r.values.item || "").trim() || null) : null;
+
+  const vendorRaw = (r.values.vendor || "").trim();
+  const itemRaw   = (r.values.item || "").trim();
+
+  if (isExpense) {
+    if (!vendorRaw) { alert("Vendor is required for expenses."); return; }
+    if (!itemRaw)   { alert("Item is required for expenses."); return; }
+  }
+
+  const vendorVal = isExpense ? vendorRaw : null;
+  const itemVal   = isExpense ? itemRaw   : null;
 
   const { error } = await supa
     .from("annual_ledger")
@@ -1086,9 +1144,27 @@ function renderTopBudgetState() {
         <button class="btn btn-primary" id="btnCreateBudget" type="button">Create Budget</button>
       </div>
     `;
+
+    // Disable month actions when there are no budgets
+    createMonthBtn && (createMonthBtn.disabled = true);
+    copyPrevCheckbox && (copyPrevCheckbox.disabled = true);
+    addExpenseBtn && (addExpenseBtn.disabled = true);
+    addMonthlyCategoryBtn && (addMonthlyCategoryBtn.disabled = true);
+    addAnnualCategoryBtn && (addAnnualCategoryBtn.disabled = true);
+    incomeInput && (incomeInput.disabled = true);
+
     document.getElementById("btnCreateBudget")?.addEventListener("click", async () => {
       try {
         await createBudgetViaRpc();
+
+        // Re-enable UI after creating the first budget
+        createMonthBtn && (createMonthBtn.disabled = false);
+        copyPrevCheckbox && (copyPrevCheckbox.disabled = false);
+        addExpenseBtn && (addExpenseBtn.disabled = false);
+        addMonthlyCategoryBtn && (addMonthlyCategoryBtn.disabled = false);
+        addAnnualCategoryBtn && (addAnnualCategoryBtn.disabled = false);
+        incomeInput && (incomeInput.disabled = false);
+
         setTopError("");
       } catch (e) {
         setTopError(e?.message || String(e));
@@ -1255,7 +1331,7 @@ function renderAnnualTables() {
 
       for (const it of view.annualBudgets) {
         const spentC = Number(it.spent_cents) || 0;
-        const totalC = Number(it.total_cents) || 0; // ✅ initial + contributions
+        const totalC = Number(it.total_cents) || 0; // initial + contributions
         const leftC = Number(it.left_cents) || (totalC - spentC);
 
         const line =
