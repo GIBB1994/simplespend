@@ -1,4 +1,4 @@
-/* SimpleSpend v0.9.6.3 (AStep 8 — WRITES WIRED + Category modal UI)
+/* SimpleSpend v0.9.6.3.3 (AStep 8 — WRITES WIRED + Category modal UI)
   - Supabase is source of truth
   - Implements:
       8.1 Create Budget (RPC only)
@@ -266,7 +266,7 @@ async function fetchAnnualBundle({ budgetId, year }) {
   // items: all for this budget (we filter by type/year in JS)
   const items = await supa
     .from("annual_items")
-    .select("id,budget_id,type,year,name,target_cents,initial_cents,created_at,updated_at")
+    .select("id,budget_id,type,year,name,item_key,target_cents,initial_cents,created_at,updated_at")
     .eq("budget_id", budgetId)
     .order("created_at", { ascending: true });
 
@@ -288,20 +288,19 @@ async function fetchAnnualBundle({ budgetId, year }) {
 async function ensureAnnualBudgetsForYear({ budgetId, year }) {
   const prevYear = Number(year) - 1;
 
-  const prev = (ss.annualItems || []).filter(
+  const all = ss.annualItems || [];
+
+  const prev = all.filter(
     (x) => x.type === "annual_budget" && Number(x.year) === prevYear
   );
   if (!prev.length) return;
 
-  const cur = (ss.annualItems || []).filter(
+  const cur = all.filter(
     (x) => x.type === "annual_budget" && Number(x.year) === Number(year)
   );
 
-  // Use item_key if you have it. If not, slug(name) is a workable fallback.
-  const keyOf = (row) => {
-    // return row.item_key || slugKey(row.name || "");
-    return slugKey(row.name || "");
-  };
+  // Prefer stable item_key; fall back to slug(name) for legacy rows
+  const keyOf = (row) => row.item_key || slugKey(row.name || "");
 
   const curKeys = new Set(cur.map(keyOf));
 
@@ -314,9 +313,9 @@ async function ensureAnnualBudgetsForYear({ budgetId, year }) {
         type: "annual_budget",
         year,
         name: p.name,
+        item_key: keyOf(p),       // carry key forward
         target_cents: budgetedC,
         initial_cents: budgetedC, // start funded = budgeted
-        // item_key: p.item_key, // if you have it
       };
     });
 
@@ -445,6 +444,8 @@ async function addAnnualItem() {
   const name = (r.values.name || "").trim();
   if (!name) return;
 
+  const item_key = slugKey(name);
+
   const type = (r.values.type || "").trim();
   if (type !== "annual_budget" && type !== "sinking_fund") {
     alert('Type must be "annual_budget" or "sinking_fund".');
@@ -487,6 +488,7 @@ async function addAnnualItem() {
     type,
     year: type === "annual_budget" ? yr : null,
     name,
+    item_key,
     target_cents: targetC,
     initial_cents: initialC,
   });
