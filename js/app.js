@@ -1,4 +1,4 @@
-/* SimpleSpend v0.9.6 (AStep 8 — WRITES WIRED + Category modal UI)
+/* SimpleSpend v0.9.6.3.3 (AStep 8 — WRITES WIRED + Category modal UI)
   - Supabase is source of truth
   - Implements:
       8.1 Create Budget (RPC only)
@@ -18,8 +18,8 @@
       contributions ignore vendor/item (forced null)
 */
 
-const APP_FALLBACK_VERSION = "v0.9.6";
-const STORAGE_KEY = "simplespend_v096";
+const APP_FALLBACK_VERSION = "v0.9.6.3";
+const STORAGE_KEY = "simplespend_v0963";
 
 // Backend truth
 const EXTRA_ID = "extra99";
@@ -81,6 +81,9 @@ let _booted = false;
 // Supabase wiring
 let supa = null;
 let authedUser = null;
+
+// Annual rollover cache
+const _rolloverDone = new Set(); // key: `${budgetId}:${year}`
 
 // Read snapshot from Supabase
 let ss = {
@@ -213,7 +216,7 @@ function hydrateLocalMonthFromSupabase({ monthKey }) {
         sort_order: Number(c.sort_order) || 0,
       })),
     // annual view-model lives in state for rendering, but is hydrated from ss yearly
-    annualCategories: (state.budgets[monthKey]?.annualCategories || []),
+    annualCategories: state.budgets[monthKey]?.annualCategories || [],
     expenses: (ss.monthlyExpenses || []).map((e) => ({
       id: e.id,
       type: "monthly",
@@ -225,7 +228,7 @@ function hydrateLocalMonthFromSupabase({ monthKey }) {
       note: e.note || "",
     })),
     // legacy slot used by annual view-model (we repurpose for sinking funds list)
-    contributions: (state.budgets[monthKey]?.contributions || []),
+    contributions: state.budgets[monthKey]?.contributions || [],
   };
 
   state.budgets[monthKey] = b;
@@ -241,7 +244,20 @@ async function refreshCurrentMonth() {
 
   // annual (year-context from current month)
   const year = yearFromMonthKey(currentMonthKey);
+
+  // initial pull (populates ss.annualItems / ss.annualLedger)
   await fetchAnnualBundle({ budgetId: bid, year });
+
+  // ensure this year has annual budgets by cloning previous year if needed
+  const rollKey = `${bid}:${year}`;
+  if (!_rolloverDone.has(rollKey)) {
+    await ensureAnnualBudgetsForYear({ budgetId: bid, year });
+    _rolloverDone.add(rollKey);
+
+    // re-pull after any inserts so view is up to date
+    await fetchAnnualBundle({ budgetId: bid, year });
+  }
+
   hydrateAnnualIntoState({ monthKey: currentMonthKey, year });
 }
 
@@ -250,7 +266,7 @@ async function fetchAnnualBundle({ budgetId, year }) {
   // items: all for this budget (we filter by type/year in JS)
   const items = await supa
     .from("annual_items")
-    .select("id,budget_id,type,year,name,target_cents,initial_cents,created_at,updated_at")
+    .select("id,budget_id,type,year,name,item_key,target_cents,initial_cents,created_at,updated_at")
     .eq("budget_id", budgetId)
     .order("created_at", { ascending: true });
 
@@ -266,6 +282,47 @@ async function fetchAnnualBundle({ budgetId, year }) {
 
   if (led.error) throw led.error;
   ss.annualLedger = led.data || [];
+}
+
+// Auto-clone last year's annual budgets into this year if needed (idempotent)
+async function ensureAnnualBudgetsForYear({ budgetId, year }) {
+  const prevYear = Number(year) - 1;
+
+  const all = ss.annualItems || [];
+
+  const prev = all.filter(
+    (x) => x.type === "annual_budget" && Number(x.year) === prevYear
+  );
+  if (!prev.length) return;
+
+  const cur = all.filter(
+    (x) => x.type === "annual_budget" && Number(x.year) === Number(year)
+  );
+
+  // Prefer stable item_key; fall back to slug(name) for legacy rows
+  const keyOf = (row) => row.item_key || slugKey(row.name || "");
+
+  const curKeys = new Set(cur.map(keyOf));
+
+  const toInsert = prev
+    .filter((p) => !curKeys.has(keyOf(p)))
+    .map((p) => {
+      const budgetedC = Number(p.target_cents) || 0; // copy targeted/budgeted amount (not total)
+      return {
+        budget_id: budgetId,
+        type: "annual_budget",
+        year,
+        name: p.name,
+        item_key: keyOf(p),       // carry key forward
+        target_cents: budgetedC,
+        initial_cents: budgetedC, // start funded = budgeted
+      };
+    });
+
+  if (!toInsert.length) return;
+
+  const { error } = await supa.from("annual_items").insert(toInsert);
+  if (error) throw error;
 }
 
 function hydrateAnnualIntoState({ monthKey, year }) {
@@ -330,7 +387,7 @@ function computeAnnualView({ year }) {
     if (type === "annual_budget") {
       if (itYear !== year) continue;
 
-      // ✅ v0.73-style annual budget semantics:
+      // v0.73-style annual budget semantics:
       // TotalAvailable = initial + contributions (target is NOT money)
       // Left = TotalAvailable - spent
       const totalC = initialC + contribC;
@@ -342,7 +399,7 @@ function computeAnnualView({ year }) {
         year: itYear,
 
         // display/reference
-        target_cents: targetC,   // display-only note
+        target_cents: targetC, // display-only note
         initial_cents: initialC, // budgeted/funded starting amount
 
         spent_cents: spentC,
@@ -356,9 +413,9 @@ function computeAnnualView({ year }) {
       sinkingFunds.push({
         id: it.id,
         name: it.name,
-        target_cents: targetC,     // goal ring
-        initial_cents: initialC,   // starting balance
-        balance_cents: balanceC,   // real balance
+        target_cents: targetC, // goal ring
+        initial_cents: initialC, // starting balance
+        balance_cents: balanceC, // real balance
         entries: allEntries,
       });
     }
@@ -387,6 +444,8 @@ async function addAnnualItem() {
   const name = (r.values.name || "").trim();
   if (!name) return;
 
+  const item_key = slugKey(name);
+
   const type = (r.values.type || "").trim();
   if (type !== "annual_budget" && type !== "sinking_fund") {
     alert('Type must be "annual_budget" or "sinking_fund".');
@@ -410,7 +469,7 @@ async function addAnnualItem() {
 
   const bid = ss.activeBudgetId;
 
-  // ✅ Semantics:
+  // Semantics:
   // Annual Budget:
   //   - Budgeted funds the envelope up front -> store into initial_cents
   //   - target_cents is display-only note (we mirror budgeted for now)
@@ -429,6 +488,7 @@ async function addAnnualItem() {
     type,
     year: type === "annual_budget" ? yr : null,
     name,
+    item_key,
     target_cents: targetC,
     initial_cents: initialC,
   });
@@ -467,10 +527,26 @@ async function addAnnualEntry({ annualItemId, entryType }) {
 
   const bid = ss.activeBudgetId;
 
-  // ✅ strict expense-only
+  // strict expense-only vendor/item behavior
   const isExpense = entryType === "expense";
-  const vendorVal = isExpense ? ((r.values.vendor || "").trim() || null) : null;
-  const itemVal = isExpense ? ((r.values.item || "").trim() || null) : null;
+
+  const vendorRaw = (r.values.vendor || "").trim();
+  const itemRaw = (r.values.item || "").trim();
+
+  // DB-guard friendly behavior:
+  if (isExpense) {
+    if (!vendorRaw) {
+      alert("Vendor is required for expenses.");
+      return;
+    }
+    if (!itemRaw) {
+      alert("Item is required for expenses.");
+      return;
+    }
+  }
+
+  const vendorVal = isExpense ? vendorRaw : null;
+  const itemVal = isExpense ? itemRaw : null;
 
   const { error } = await supa.from("annual_ledger").insert({
     budget_id: bid,
@@ -525,10 +601,25 @@ async function editAnnualEntry(entryId) {
     return;
   }
 
-  // ✅ strict expense-only
+  // strict expense-only vendor/item behavior
   const isExpense = entry_type === "expense";
-  const vendorVal = isExpense ? ((r.values.vendor || "").trim() || null) : null;
-  const itemVal = isExpense ? ((r.values.item || "").trim() || null) : null;
+
+  const vendorRaw = (r.values.vendor || "").trim();
+  const itemRaw = (r.values.item || "").trim();
+
+  if (isExpense) {
+    if (!vendorRaw) {
+      alert("Vendor is required for expenses.");
+      return;
+    }
+    if (!itemRaw) {
+      alert("Item is required for expenses.");
+      return;
+    }
+  }
+
+  const vendorVal = isExpense ? vendorRaw : null;
+  const itemVal = isExpense ? itemRaw : null;
 
   const { error } = await supa
     .from("annual_ledger")
@@ -606,6 +697,8 @@ async function editAnnualItem(itemId) {
 
 // -------------------- Budget + Month WRITES --------------------
 async function createBudgetViaRpc() {
+  if (!authedUser) throw new Error("Not signed in.");
+
   const name = (prompt("Budget name:") || "").trim();
   if (!name) return;
 
@@ -613,7 +706,9 @@ async function createBudgetViaRpc() {
   if (error) throw error;
 
   await fetchBudgetsForUser();
-  ss.activeBudgetId = pickActiveBudgetId();
+  ss.activeBudgetId = ss.budgets?.[0]?.id || null;
+  if (!ss.activeBudgetId)
+    throw new Error("Budget create succeeded but no budget is visible (RLS/membership issue).");
 
   await refreshCurrentMonth();
   seedMonthSelect();
@@ -1086,9 +1181,27 @@ function renderTopBudgetState() {
         <button class="btn btn-primary" id="btnCreateBudget" type="button">Create Budget</button>
       </div>
     `;
+
+    // Disable month actions when there are no budgets
+    createMonthBtn && (createMonthBtn.disabled = true);
+    copyPrevCheckbox && (copyPrevCheckbox.disabled = true);
+    addExpenseBtn && (addExpenseBtn.disabled = true);
+    addMonthlyCategoryBtn && (addMonthlyCategoryBtn.disabled = true);
+    addAnnualCategoryBtn && (addAnnualCategoryBtn.disabled = true);
+    incomeInput && (incomeInput.disabled = true);
+
     document.getElementById("btnCreateBudget")?.addEventListener("click", async () => {
       try {
         await createBudgetViaRpc();
+
+        // Re-enable UI after creating the first budget
+        createMonthBtn && (createMonthBtn.disabled = false);
+        copyPrevCheckbox && (copyPrevCheckbox.disabled = false);
+        addExpenseBtn && (addExpenseBtn.disabled = false);
+        addMonthlyCategoryBtn && (addMonthlyCategoryBtn.disabled = false);
+        addAnnualCategoryBtn && (addAnnualCategoryBtn.disabled = false);
+        incomeInput && (incomeInput.disabled = false);
+
         setTopError("");
       } catch (e) {
         setTopError(e?.message || String(e));
@@ -1255,8 +1368,8 @@ function renderAnnualTables() {
 
       for (const it of view.annualBudgets) {
         const spentC = Number(it.spent_cents) || 0;
-        const totalC = Number(it.total_cents) || 0; // ✅ initial + contributions
-        const leftC = Number(it.left_cents) || (totalC - spentC);
+        const totalC = Number(it.total_cents) || 0; // initial + contributions
+        const leftC = Number(it.left_cents) || totalC - spentC;
 
         const line =
           amountMode === "left"
@@ -1646,7 +1759,7 @@ function bindExpenseCardActions(container) {
       e.stopPropagation();
       const id = btn.dataset.editExp;
       const b = getBudget(currentMonthKey);
-      const ex = (b?.expenses || []).find((x) => String(x.id) === String(id));
+      const ex = b?.expenses?.find((x) => String(x.id) === String(id));
       if (!ex) return;
       openExpenseModal({ mode: "edit", expense: ex });
     });
