@@ -1,4 +1,4 @@
-// js/appEntry.js
+// js/appEntry.js 
 import { initApp } from "./app.js";
 
 export async function initSimpleSpendApp({ supabase, user }) {

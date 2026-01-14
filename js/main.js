@@ -1,4 +1,4 @@
-// js/main.js
+// js/main.js 
 import { makeSupabase, initAuthUI } from "./auth.js";
 
 const supabase = makeSupabase();
