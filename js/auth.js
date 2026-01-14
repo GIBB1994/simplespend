@@ -1,5 +1,5 @@
 // js/auth.js
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
 export function makeSupabase() {
   const cfg = window.SS_CONFIG || {};
