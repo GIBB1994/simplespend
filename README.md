@@ -1,4 +1,4 @@
-# SimpleSpend
+# SimpleSpend 
 
 **Manual, envelope-based budgeting — month-first, ledger-driven, no hidden math.**
 
