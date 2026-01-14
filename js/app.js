@@ -1,4 +1,4 @@
-/* SimpleSpend v0.9.6.3.3 (AStep 8 — WRITES WIRED + Category modal UI)
+/* SimpleSpend v1.0 (AStep 8 — WRITES WIRED + Category modal UI)
   - Supabase is source of truth
   - Implements:
       8.1 Create Budget (RPC only)
@@ -115,6 +115,7 @@ export async function initApp({ supabase, user }) {
 
   await loadVersionBadge();
   await bootReads();
+
 
   seedMonthSelect();
   if (monthSelect) monthSelect.value = currentMonthKey;
@@ -448,7 +449,7 @@ async function addAnnualItem() {
 
   const type = (r.values.type || "").trim();
   if (type !== "annual_budget" && type !== "sinking_fund") {
-    alert('Type must be "annual_budget" or "sinking_fund".');
+    setTopError('Type must be "annual_budget" or "sinking_fund".');
     return;
   }
 
@@ -456,11 +457,11 @@ async function addAnnualItem() {
   const yr = yrRaw ? Number(yrRaw) : null;
 
   if (type === "annual_budget" && (!yr || !Number.isFinite(yr))) {
-    alert("Annual Budget requires a year.");
+    setTopError("Annual Budget requires a year.");
     return;
   }
   if (type === "sinking_fund" && yrRaw) {
-    alert("Sinking Fund must have a blank year.");
+    setTopError("Sinking Fund must have a blank year.");
     return;
   }
 
@@ -515,13 +516,13 @@ async function addAnnualEntry({ annualItemId, entryType }) {
 
   const amount = parseMoney(r.values.amount || "0");
   if (!amount || toCents(amount) === 0) {
-    alert("Amount must be non-zero.");
+    setTopError("Amount must be non-zero.");
     return;
   }
 
   const entry_date = (r.values.date || "").trim();
   if (!entry_date) {
-    alert("Date is required.");
+    setTopError("Date is required.");
     return;
   }
 
@@ -534,17 +535,6 @@ async function addAnnualEntry({ annualItemId, entryType }) {
   const itemRaw = (r.values.item || "").trim();
 
   // DB-guard friendly behavior:
-  if (isExpense) {
-    if (!vendorRaw) {
-      alert("Vendor is required for expenses.");
-      return;
-    }
-    if (!itemRaw) {
-      alert("Item is required for expenses.");
-      return;
-    }
-  }
-
   const vendorVal = isExpense ? vendorRaw : null;
   const itemVal = isExpense ? itemRaw : null;
 
@@ -585,19 +575,19 @@ async function editAnnualEntry(entryId) {
 
   const entry_type = (r.values.entry_type || "").trim().toLowerCase();
   if (entry_type !== "contribution" && entry_type !== "expense") {
-    alert('Entry type must be "contribution" or "expense".');
+    setTopError('Entry type must be "contribution" or "expense".');
     return;
   }
 
   const amount = parseMoney(r.values.amount || "0");
   if (!amount || toCents(amount) === 0) {
-    alert("Amount must be non-zero.");
+    setTopError("Amount must be non-zero.");
     return;
   }
 
   const entry_date = (r.values.date || "").trim();
   if (!entry_date) {
-    alert("Date is required.");
+    setTopError("Date is required.");
     return;
   }
 
@@ -606,17 +596,6 @@ async function editAnnualEntry(entryId) {
 
   const vendorRaw = (r.values.vendor || "").trim();
   const itemRaw = (r.values.item || "").trim();
-
-  if (isExpense) {
-    if (!vendorRaw) {
-      alert("Vendor is required for expenses.");
-      return;
-    }
-    if (!itemRaw) {
-      alert("Item is required for expenses.");
-      return;
-    }
-  }
 
   const vendorVal = isExpense ? vendorRaw : null;
   const itemVal = isExpense ? itemRaw : null;
@@ -696,28 +675,54 @@ async function editAnnualItem(itemId) {
 }
 
 // -------------------- Budget + Month WRITES --------------------
-async function createBudgetViaRpc() {
+async function createBudgetViaRpc({ name } = {}) {
   if (!authedUser) throw new Error("Not signed in.");
 
-  const name = (prompt("Budget name:") || "").trim();
-  if (!name) return;
+  // One-budget-per-user, name is backend-only
+  const budgetName = (name || "My Budget").trim();
 
-  const { error } = await supa.rpc("create_budget_for_current_user", { budget_name: name });
+  const { data, error } = await supa.rpc("create_budget_for_current_user", {
+    budget_name: budgetName,
+  });
   if (error) throw error;
 
+  // data should be the new budget_id (per your function body)
+  const newId = data || null;
+
+  // Refresh list and set active
   await fetchBudgetsForUser();
-  ss.activeBudgetId = ss.budgets?.[0]?.id || null;
-  if (!ss.activeBudgetId)
+  ss.activeBudgetId = newId || (ss.budgets?.[0]?.id ?? null);
+
+  if (!ss.activeBudgetId) {
     throw new Error("Budget create succeeded but no budget is visible (RLS/membership issue).");
+  }
 
   await refreshCurrentMonth();
   seedMonthSelect();
   render();
 }
 
+async function ensureActiveBudgetId() {
+  // If we already have one in memory, use it
+  if (ss.activeBudgetId) return ss.activeBudgetId;
+
+  // Re-pull budgets from backend
+  await fetchBudgetsForUser();
+  const bid = pickActiveBudgetId();
+  ss.activeBudgetId = bid || null;
+  return ss.activeBudgetId;
+}
+
 async function createMonth({ monthKey, copyPrev }) {
-  const bid = ss.activeBudgetId;
-  if (!bid) throw new Error("No active budget selected.");
+  // Make sure we actually have a budget
+  let bid = await ensureActiveBudgetId();
+
+  // If still none, auto-create one for truly new users
+  if (!bid) {
+    await createBudgetViaRpc();       // this sets ss.activeBudgetId internally
+    bid = ss.activeBudgetId;
+    if (!bid) throw new Error("Could not create a budget for this user.");
+  }
 
   const income = parseMoney(incomeInput?.value || "0");
   const { error: insErr } = await supa.from("months").insert({
@@ -847,8 +852,7 @@ function openPromptModal({ title, fields }) {
 
 // -------------------- Monthly Category WRITES --------------------
 async function addMonthlyCategory() {
-  const bid = ss.activeBudgetId;
-  if (!bid) throw new Error("No active budget selected.");
+  let bid = await ensureActiveBudgetId();
   const b = getBudget(currentMonthKey);
   if (!b) throw new Error("Create the month first.");
 
@@ -898,8 +902,7 @@ async function addMonthlyCategory() {
 }
 
 async function editMonthlyCategory(catId) {
-  const bid = ss.activeBudgetId;
-  if (!bid) throw new Error("No active budget selected.");
+  let bid = await ensureActiveBudgetId();
   if (catId === EXTRA_ID) return;
 
   const cur = (ss.monthlyCategories || []).find((c) => c.category_key === catId);
@@ -934,8 +937,7 @@ async function editMonthlyCategory(catId) {
 }
 
 async function deleteMonthlyCategory(catId) {
-  const bid = ss.activeBudgetId;
-  if (!bid) throw new Error("No active budget selected.");
+  let bid = await ensureActiveBudgetId();
   if (catId === EXTRA_ID) return;
 
   const ok = confirm("Delete this category? Its expenses will be moved to Extra.");
@@ -956,8 +958,7 @@ async function deleteMonthlyCategory(catId) {
 
 // -------------------- Expense writes --------------------
 async function insertExpense(payload) {
-  const bid = ss.activeBudgetId;
-  if (!bid) throw new Error("No active budget selected.");
+  let bid = await ensureActiveBudgetId();
 
   const { error } = await supa.from("monthly_expenses").insert({
     budget_id: bid,
@@ -977,8 +978,7 @@ async function insertExpense(payload) {
 }
 
 async function updateExpense(expenseId, payload) {
-  const bid = ss.activeBudgetId;
-  if (!bid) throw new Error("No active budget selected.");
+  let bid = await ensureActiveBudgetId();
 
   const { error } = await supa
     .from("monthly_expenses")
@@ -1001,8 +1001,7 @@ async function updateExpense(expenseId, payload) {
 }
 
 async function deleteExpense(expenseId) {
-  const bid = ss.activeBudgetId;
-  if (!bid) throw new Error("No active budget selected.");
+  let bid = await ensureActiveBudgetId();
 
   const ok = confirm("Delete this expense?");
   if (!ok) return;
@@ -1046,13 +1045,13 @@ function wireEvents() {
       await createMonth({ monthKey: currentMonthKey, copyPrev: !!copyPrevCheckbox?.checked });
     } catch (e) {
       setTopError(e?.message || String(e));
-      alert(e?.message || e);
+      setTopError(e?.message || e);
     }
   });
 
   addExpenseBtn?.addEventListener("click", () => {
     const b = getBudget(currentMonthKey);
-    if (!b) return alert("Create the month first.");
+    if (!b) return setTopError("Create the month first.");
     openExpenseModal({ mode: "add" });
   });
 
@@ -1066,7 +1065,7 @@ function wireEvents() {
       await updateIncome();
     } catch (e) {
       setTopError(e?.message || String(e));
-      alert(e?.message || e);
+      setTopError(e?.message || e);
     }
   });
 
@@ -1075,7 +1074,7 @@ function wireEvents() {
       await addMonthlyCategory();
     } catch (e) {
       setTopError(e?.message || String(e));
-      alert(e?.message || e);
+      setTopError(e?.message || e);
     }
   });
 
@@ -1084,7 +1083,7 @@ function wireEvents() {
       await addAnnualItem();
     } catch (e) {
       setTopError(e?.message || String(e));
-      alert(e?.message || e);
+      setTopError(e?.message || e);
     }
   });
 
@@ -1098,7 +1097,7 @@ function wireEvents() {
       await saveExpense(false);
     } catch (e) {
       setTopError(e?.message || String(e));
-      alert(e?.message || e);
+      setTopError(e?.message || e);
     }
   });
 
@@ -1107,7 +1106,7 @@ function wireEvents() {
       await saveExpense(true);
     } catch (e) {
       setTopError(e?.message || String(e));
-      alert(e?.message || e);
+      setTopError(e?.message || e);
     }
   });
 }
@@ -1205,7 +1204,7 @@ function renderTopBudgetState() {
         setTopError("");
       } catch (e) {
         setTopError(e?.message || String(e));
-        alert(e?.message || e);
+        setTopError(e?.message || e);
       }
     });
   }
@@ -1520,7 +1519,7 @@ function bindAnnualActions(container) {
         await addAnnualEntry({ annualItemId: itemId, entryType });
       } catch (err) {
         setTopError(err?.message || String(err));
-        alert(err?.message || err);
+        setTopError(err?.message || err);
       }
     });
   });
@@ -1532,7 +1531,7 @@ function bindAnnualActions(container) {
         await editAnnualItem(btn.dataset.editAnnualItem);
       } catch (err) {
         setTopError(err?.message || String(err));
-        alert(err?.message || err);
+        setTopError(err?.message || err);
       }
     });
   });
@@ -1544,7 +1543,7 @@ function bindAnnualActions(container) {
         await editAnnualEntry(btn.dataset.editAnnualEntry);
       } catch (err) {
         setTopError(err?.message || String(err));
-        alert(err?.message || err);
+        setTopError(err?.message || err);
       }
     });
   });
@@ -1556,7 +1555,7 @@ function bindAnnualActions(container) {
         await deleteAnnualEntry(btn.dataset.delAnnualEntry);
       } catch (err) {
         setTopError(err?.message || String(err));
-        alert(err?.message || err);
+        setTopError(err?.message || err);
       }
     });
   });
@@ -1630,7 +1629,7 @@ function bindListInteractions(container) {
         await editMonthlyCategory(id);
       } catch (err) {
         setTopError(err?.message || String(err));
-        alert(err?.message || err);
+        setTopError(err?.message || err);
       }
     });
   });
@@ -1644,7 +1643,7 @@ function bindListInteractions(container) {
         await deleteMonthlyCategory(id);
       } catch (err) {
         setTopError(err?.message || String(err));
-        alert(err?.message || err);
+        setTopError(err?.message || err);
       }
     });
   });
@@ -1656,7 +1655,7 @@ function openExpenseModal({ mode, categoryId = null, expense = null } = {}) {
   editingExpense = null;
 
   const b = getBudget(currentMonthKey);
-  if (!b) return alert("Create the month first.");
+  if (!b) return setTopError("Create the month first.");
 
   refreshExpenseCategoryDropdown();
 
@@ -1699,8 +1698,6 @@ async function saveExpense(addAnother) {
   const category_key = expCategory?.value || "";
   const note = (expNote?.value || "").trim();
 
-  if (!vendor) throw new Error("Vendor is required.");
-  if (!item) throw new Error("Item is required.");
   if (!dateISO) throw new Error("Date is required.");
   if (!category_key) throw new Error("Category is required.");
   if (category_key === EXTRA_ID) throw new Error("Extra cannot be selected.");
@@ -1749,7 +1746,7 @@ function bindExpenseCardActions(container) {
         await deleteExpense(btn.dataset.delExp);
       } catch (err) {
         setTopError(err?.message || String(err));
-        alert(err?.message || err);
+        setTopError(err?.message || err);
       }
     });
   });
