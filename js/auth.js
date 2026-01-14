@@ -1,4 +1,4 @@
-// js/auth.js
+// js/auth.js 
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
 export function makeSupabase() {
