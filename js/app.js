@@ -1,4 +1,4 @@
-/* SimpleSpend v0.9.8 (AStep 8 — WRITES WIRED + Category modal UI)
+/* SimpleSpend v1.0 (AStep 8 — WRITES WIRED + Category modal UI)
   - Supabase is source of truth
   - Implements:
       8.1 Create Budget (RPC only)
